@@ -1,25 +1,26 @@
 import { BaseLLMAdapter } from './base';
 
-export class OpenAIAdapter extends BaseLLMAdapter {
+export class AzureAdapter extends BaseLLMAdapter {
   private apiKey: string;
+  private endpoint: string;
   private model: string;
 
-  constructor(apiKey: string, model: string = 'gpt-4') {
-    super('openai', 'OpenAI GPT-4', 'OpenAI');
+  constructor(apiKey: string, endpoint: string, model: string = 'gpt-4') {
+    super('azure', 'Azure OpenAI GPT-4', 'Azure');
     this.apiKey = apiKey;
+    this.endpoint = endpoint;
     this.model = model;
   }
 
   async call(prompt: string): Promise<string> {
     try {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      const response = await fetch(`${this.endpoint}/openai/deployments/${this.model}/chat/completions?api-version=2023-05-15`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
+          'api-key': this.apiKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: this.model,
           messages: [
             {
               role: 'user',
@@ -33,13 +34,13 @@ export class OpenAIAdapter extends BaseLLMAdapter {
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error?.message || 'OpenAI API error');
+        throw new Error(error.error?.message || 'Azure API error');
       }
 
       const data = await response.json();
       return data.choices[0].message.content;
     } catch (error) {
-      console.error('OpenAI adapter error:', error);
+      console.error('Azure adapter error:', error);
       throw error;
     }
   }
