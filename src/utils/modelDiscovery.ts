@@ -9,6 +9,7 @@ interface ModelInfo {
     input: string;
     output: string;
   };
+  apiPath?: string;
 }
 
 interface ProviderModels {
@@ -18,6 +19,15 @@ interface ProviderModels {
   bedrock?: ModelInfo[];
   ollama?: ModelInfo[];
   google?: ModelInfo[];
+}
+
+interface GoogleModelInfo extends ModelInfo {
+  apiPath: string;
+}
+
+interface GoogleModelMetadata {
+  name: string;
+  version: 'v1' | 'v1beta';
 }
 
 // Fallback models in case API calls fail
@@ -51,6 +61,48 @@ const FALLBACK_MODELS: ProviderModels = {
     { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', contextWindow: 32768 },
     { id: 'gemini-2.0-pro', name: 'Gemini 2.0 Pro', contextWindow: 32768 }
   ],
+};
+
+// Update version paths for Google models
+const GOOGLE_API_VERSIONS = [
+  {
+    path: 'v1',
+    models: [
+      'gemini-pro',
+      'gemini-pro-vision',
+      'gemini-2.0-pro',
+      'gemini-2.0-pro-vision',
+      'gemini-2.0-pro-latest',
+      'gemini-2.0-pro-vision-latest',
+      'chat-bison'
+    ]
+  },
+  {
+    path: 'v1beta',
+    models: [
+      'gemini-pro',
+      'gemini-pro-vision',
+      'gemini-ultra',
+      'gemini-2.0-pro',
+      'gemini-2.0-pro-vision',
+      'gemini-2.0-pro-latest',
+      'gemini-2.0-pro-vision-latest',
+      'chat-bison-001'
+    ]
+  }
+] as const;
+
+// Update model metadata
+const GOOGLE_MODEL_METADATA: Record<string, GoogleModelMetadata> = {
+  'gemini-pro': { name: 'Gemini Pro', version: 'v1' },
+  'gemini-pro-vision': { name: 'Gemini Pro Vision', version: 'v1' },
+  'gemini-ultra': { name: 'Gemini Ultra', version: 'v1beta' },
+  'gemini-2.0-pro': { name: 'Gemini 2.0 Pro', version: 'v1' },
+  'gemini-2.0-pro-vision': { name: 'Gemini 2.0 Pro Vision', version: 'v1' },
+  'gemini-2.0-pro-latest': { name: 'Gemini 2.0 Pro (Latest)', version: 'v1' },
+  'gemini-2.0-pro-vision-latest': { name: 'Gemini 2.0 Pro Vision (Latest)', version: 'v1' },
+  'chat-bison': { name: 'PaLM 2 Chat', version: 'v1' },
+  'chat-bison-001': { name: 'PaLM 2 Chat', version: 'v1beta' }
 };
 
 export async function discoverAvailableModels(adapters: TestSuite['adapters']): Promise<ProviderModels> {
@@ -87,7 +139,7 @@ export async function discoverAvailableModels(adapters: TestSuite['adapters']): 
           results.ollama = await discoverOllamaModels(adapter.config.endpoint);
           break;
         case 'google':
-          results.google = await discoverGoogleModels(adapter.config.apiKey);
+          results.google = await discoverGoogleModels(adapter);
           break;
       }
     } catch (error) {
@@ -390,68 +442,141 @@ async function discoverOllamaModels(endpoint: string): Promise<ModelInfo[]> {
   }
 }
 
-async function discoverGoogleModels(apiKey: string): Promise<ModelInfo[]> {
+const discoverGoogleModels = async (adapter: any): Promise<ModelInfo[]> => {
+  const apiKey = adapter.config.apiKey;
   if (!apiKey) {
-    console.log('[Model Discovery] Google: No API key provided');
-    throw new Error('Google API key is required');
+    console.log('[Google API] No API key provided, using fallback models');
+    return [
+      {
+        id: 'models/gemini-pro',
+        name: 'Gemini Pro',
+        contextWindow: 32000,
+        apiPath: 'v1'
+      },
+      {
+        id: 'models/gemini-1.5-pro',
+        name: 'Gemini 1.5 Pro',
+        contextWindow: 128000,
+        apiPath: 'v1'
+      }
+    ];
   }
 
-  console.log('[Model Discovery] Google: Fetching models from beta API...');
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  });
+  let allModels: ModelInfo[] = [];
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`[Model Discovery] Google: API error: ${response.status} ${response.statusText}\n${errorText}`);
-    throw new Error(`Google API error: ${response.status} ${response.statusText}`);
+  // Try each API version
+  for (const versionConfig of GOOGLE_API_VERSIONS) {
+    try {
+      console.log(`[Google API] Checking ${versionConfig.path} API...`);
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/${versionConfig.path}/models?key=${apiKey}`
+      );
+
+      if (!response.ok) {
+        console.warn(`[Google API] Failed to fetch models for ${versionConfig.path}:`, response.status);
+        continue;
+      }
+
+      const data = await response.json();
+      if (!data.models) {
+        console.warn(`[Google API] No models found in response for ${versionConfig.path}`);
+        continue;
+      }
+
+      // Filter models to include all valid LLM models
+      const models = data.models
+        .filter((model: any) => {
+          const modelName = model.name.split('/').pop();
+          const isVisionModel = modelName.includes('vision');
+          const isEmbeddingModel = modelName.includes('embedding') || 
+                                  modelName.startsWith('embedding-') || 
+                                  modelName.startsWith('text-embedding-');
+          const isImageGenerationModel = modelName.includes('imagen') || modelName.includes('image');
+          const supportsTextGeneration = model.supportedGenerationMethods?.includes('generateContent');
+          const isGeminiOrGemma = modelName.includes('gemini') || modelName.includes('gemma');
+
+          // Include model if:
+          // 1. It's a Gemini or Gemma model
+          // 2. It supports text generation
+          // 3. It's NOT a vision model
+          // 4. It's NOT an embedding model
+          // 5. It's NOT an image generation model
+          return isGeminiOrGemma && 
+                 supportsTextGeneration && 
+                 !isVisionModel && 
+                 !isEmbeddingModel &&
+                 !isImageGenerationModel;
+        })
+        .map((model: any) => {
+          const modelName = model.name.split('/').pop();
+          const displayName = model.displayName || getDisplayName(modelName);
+          
+          return {
+            id: `models/${modelName}`,
+            name: displayName,
+            contextWindow: model.inputTokenLimit || determineContextWindow(modelName),
+            apiPath: versionConfig.path
+          };
+        });
+
+      if (models.length > 0) {
+        console.log(`[Google API] Found ${models.length} models in ${versionConfig.path}:`, 
+          models.map((m: any) => m.name));
+        // Add models to our collection
+        allModels = [...allModels, ...models];
+      } else {
+        console.warn(`[Google API] No suitable LLM models found in ${versionConfig.path}`);
+      }
+    } catch (error) {
+      console.error(`[Google API] Error discovering models for ${versionConfig.path}:`, error);
+    }
   }
 
-  const data = await response.json();
-  console.log('[Model Discovery] Google: Raw API response:', JSON.stringify(data));
-
-  if (!data.models || !Array.isArray(data.models)) {
-    console.error('[Model Discovery] Google: Unexpected API response format', data);
-    throw new Error('Unexpected API response format from Google');
+  // If no models were discovered, use fallback with non-vision models only
+  if (allModels.length === 0) {
+    console.log('[Google API] No models discovered, using basic fallback models');
+    return [
+      {
+        id: 'models/gemini-pro',
+        name: 'Gemini Pro',
+        contextWindow: 32000,
+        apiPath: 'v1'
+      },
+      {
+        id: 'models/gemini-1.5-pro',
+        name: 'Gemini 1.5 Pro',
+        contextWindow: 128000,
+        apiPath: 'v1'
+      }
+    ];
   }
 
-  // Log all available models for debugging
-  console.log('[Model Discovery] Google: All available models:', 
-    data.models.map((m: any) => ({ 
-      name: m.name, 
-      displayName: m.displayName,
-      version: m.version,
-      inputTokenLimit: m.inputTokenLimit,
-      outputTokenLimit: m.outputTokenLimit
-    }))
-  );
-
-  // Filter for Gemini models
-  const llmModels = data.models.filter((model: any) => {
-    const name = model.name.toLowerCase();
-    // Include all Gemini models except embeddings
-    return name.includes('gemini') && !name.includes('embedding');
-  });
+  // Remove duplicates based on model ID
+  const uniqueModels = Array.from(new Map(allModels.map(model => [model.id, model])).values());
+  console.log(`[Google API] Total unique models discovered: ${uniqueModels.length}`);
+  console.log('[Google API] Final model list:', uniqueModels.map(m => `${m.name} (${m.apiPath})`));
   
-  console.log(`[Model Discovery] Google: Found ${llmModels.length} Gemini models:`, 
-    llmModels.map((m: any) => m.name)
-  );
-  
-  if (llmModels.length === 0) {
-    console.warn('[Model Discovery] Google: No Gemini models found. Using fallback models.');
-    return FALLBACK_MODELS.google || [];
-  }
+  return uniqueModels;
+};
 
-  const models = llmModels.map((model: any) => ({
-    id: model.name.split('/').pop(),
-    name: model.displayName || model.name,
-    contextWindow: model.inputTokenLimit,
-    maxTokens: model.outputTokenLimit,
-    version: model.version // Add version info for debugging
-  }));
-  
-  console.log(`[Model Discovery] Google: Successfully processed ${models.length} Gemini models:`, models);
-  return models;
+// Helper function to create a nice display name from model ID
+function getDisplayName(modelId: string): string {
+  return modelId
+    .split('-')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+// Helper function to estimate context window size based on model name
+function determineContextWindow(modelName: string): number {
+  // Default values based on model families
+  if (modelName.includes('gemini-1.0')) return 32000;
+  if (modelName.includes('gemini-1.5')) return 128000;
+  if (modelName.includes('gemini-2')) return 128000;
+  if (modelName.includes('gemma-3')) {
+    if (modelName.includes('27b')) return 128000;
+    if (modelName.includes('12b')) return 128000;
+    return 64000; // For smaller Gemma models
+  }
+  return 32000; // Default fallback
 } 

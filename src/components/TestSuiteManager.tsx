@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTestSuites } from '../hooks/useTestSuites';
 import { TestCategory, LLMAdapter } from '../types/llm';
 import { TestSuite, AVAILABLE_MODELS } from '../types/testSuite';
@@ -9,63 +9,166 @@ import { crypticTests, CrypticTest } from '../types/cryptic';
 import { codeTests, CodeTest } from '../types/code';
 import { TestRunner } from '../benchmark/TestRunner';
 import { createAdapter } from '../utils/adapterFactory';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell
+} from 'recharts';
 
 const stripMarkdown = (text: string) => {
   return text.replace(/```[a-z]*\n/g, '').replace(/```/g, '');
 };
 
-// Add rate limit tracking
+// Update rate limit tracking
 interface RateLimitInfo {
   lastRequestTime: number;
   requestCount: number;
   resetTime: number;
+  minuteStartTime: number;
+  requestsThisMinute: number;
+  quotaExceededTime: number | null;
+  quotaExceededCount: number;
 }
 
 const rateLimitMap = new Map<string, RateLimitInfo>();
+const MAX_REQUESTS_PER_MINUTE = 10;
+const QUOTA_RESET_TIME = 60 * 60 * 1000; // 1 hour in milliseconds (more reasonable than 24 hours)
+
+// Load rate limit info from localStorage on component mount
+const loadRateLimitInfo = () => {
+  try {
+    const savedInfo = localStorage.getItem('rateLimitInfo');
+    if (savedInfo) {
+      const parsedInfo = JSON.parse(savedInfo);
+      Object.entries(parsedInfo).forEach(([key, value]) => {
+        rateLimitMap.set(key, value as RateLimitInfo);
+      });
+      console.log('Loaded rate limit info from localStorage:', rateLimitMap);
+    }
+  } catch (error) {
+    console.error('Error loading rate limit info:', error);
+  }
+};
+
+// Save rate limit info to localStorage
+const saveRateLimitInfo = () => {
+  try {
+    const infoToSave: Record<string, RateLimitInfo> = {};
+    rateLimitMap.forEach((value, key) => {
+      infoToSave[key] = value;
+    });
+    localStorage.setItem('rateLimitInfo', JSON.stringify(infoToSave));
+    console.log('Saved rate limit info to localStorage');
+  } catch (error) {
+    console.error('Error saving rate limit info:', error);
+  }
+};
 
 const getRateLimitInfo = (adapterId: string): RateLimitInfo => {
   if (!rateLimitMap.has(adapterId)) {
     rateLimitMap.set(adapterId, {
       lastRequestTime: 0,
       requestCount: 0,
-      resetTime: 0
+      resetTime: 0,
+      minuteStartTime: Date.now(),
+      requestsThisMinute: 0,
+      quotaExceededTime: null,
+      quotaExceededCount: 0
     });
   }
   return rateLimitMap.get(adapterId)!;
 };
 
-const updateRateLimitInfo = (adapterId: string, isRateLimited: boolean, resetTime?: number) => {
+const updateRateLimitInfo = (adapterId: string, isRateLimited: boolean, resetTime?: number, isQuotaExceeded: boolean = false) => {
   const info = getRateLimitInfo(adapterId);
   const now = Date.now();
+  
+  // Check if we need to reset the minute counter
+  if (now - info.minuteStartTime >= 60000) {
+    info.minuteStartTime = now;
+    info.requestsThisMinute = 0;
+  }
   
   // Reset counter if we're past the reset time
   if (now > info.resetTime) {
     info.requestCount = 0;
   }
   
+  // Handle quota exceeded
+  if (isQuotaExceeded) {
+    info.quotaExceededTime = now;
+    info.quotaExceededCount++;
+    console.log(`%cQuota exceeded for ${adapterId} at ${new Date(now).toLocaleTimeString()} (count: ${info.quotaExceededCount})`, 'color: red');
+  } else if (info.quotaExceededTime && (now - info.quotaExceededTime > QUOTA_RESET_TIME)) {
+    // Reset quota exceeded status after 1 hour
+    info.quotaExceededTime = null;
+    console.log(`%cQuota exceeded status reset for ${adapterId}`, 'color: green');
+  }
+  
   info.lastRequestTime = now;
   info.requestCount++;
+  info.requestsThisMinute++;
   
   if (isRateLimited && resetTime) {
     info.resetTime = resetTime;
   }
+  
+  // Save to localStorage after each update
+  saveRateLimitInfo();
 };
 
 const calculateBackoff = (adapterId: string): number => {
   const info = getRateLimitInfo(adapterId);
   const now = Date.now();
   
+  // Check if we're in a quota exceeded state
+  if (info.quotaExceededTime) {
+    // For quota exceeded, use a more reasonable approach:
+    // 1. First few times: wait 5 minutes
+    // 2. After that: wait 15 minutes
+    // 3. After many failures: wait 30 minutes
+    let waitTime = 5 * 60 * 1000; // 5 minutes default
+    
+    if (info.quotaExceededCount > 3) {
+      waitTime = 15 * 60 * 1000; // 15 minutes
+    }
+    
+    if (info.quotaExceededCount > 5) {
+      waitTime = 30 * 60 * 1000; // 30 minutes
+    }
+    
+    console.log(`%cQuota exceeded for ${adapterId}, waiting ${Math.round(waitTime/1000)} seconds before retry (attempt ${info.quotaExceededCount})`, 'color: red');
+    return waitTime;
+  }
+  
   // If we're rate limited, wait until reset time
   if (now < info.resetTime) {
     return info.resetTime - now;
   }
   
-  // Increase base delay for Google API to avoid rate limits
+  // Check if we've hit the per-minute limit
+  if (info.requestsThisMinute >= MAX_REQUESTS_PER_MINUTE) {
+    // Wait until the next minute starts
+    const waitTime = 60000 - (now - info.minuteStartTime);
+    return waitTime > 0 ? waitTime : 0;
+  }
+  
+  // Add base delay between requests
   const baseDelay = adapterId.includes('google') 
-    ? Math.min(2000 * Math.pow(2, info.requestCount), 60000) // More conservative for Google: 2s base, up to 60s
+    ? Math.min(2000 * Math.pow(2, info.requestCount), 60000) // More conservative for Google
     : Math.min(1000 * Math.pow(1.5, info.requestCount), 30000); // Original for others
   
-  // Add jitter to prevent thundering herd
+  // Add jitter
   const jitter = Math.random() * 1000;
   
   return baseDelay + jitter;
@@ -76,7 +179,7 @@ const CRYPTIC_SYSTEM_PROMPT = `You are an expert at solving cryptic crossword cl
 Analyze the clue and provide your response in valid JSON format. Your response must be a single-line JSON object with this exact structure:
 
 {
-  "scratchpad": "1. Definition: [identify the definition part] | 2. Indicators: [list wordplay indicators] | 3. Components: [list clue components] | 4. Analysis: [analyze wordplay devices] | 5. Steps: [explain solution steps] | 6. Misdirection: [explain any clever surface reading] | 7. Verification: [confirm definition and wordplay match]",
+  "scratchpad": "This is an area for you to write your thoughts and analysis. You should use the pipe symbol (|) to separate sections in the scratchpad instead of line breaks. In the scratchpad, you should consider the definition, indicators, components, analysis, steps, misdirection, and verification.",
   "answer": "single word or phrase answer"
 }
 
@@ -115,15 +218,18 @@ interface AdapterTestStatus {
   success?: boolean;
 }
 
-type TestOutput = {
+interface TestOutput {
   prompt: string;
+  testName: string;
   rawResponse: string;
+  error?: string;
+  duration: number;
   parsedResponse?: {
     scratchpad: string;
     answer: string;
+    passed: boolean;
   };
-  error?: string;
-};
+}
 
 const normalizeAnswer = (text: string): string => {
   return text.toLowerCase().trim().replace(/\s+/g, ' ');
@@ -131,6 +237,204 @@ const normalizeAnswer = (text: string): string => {
 
 const getAvailableModels = (provider: ProviderType) => {
   return AVAILABLE_MODELS[provider] || [];
+};
+
+const CHART_COLORS = [
+  '#2563eb', // primary-600
+  '#16a34a', // green-600
+  '#dc2626', // red-600
+  '#9333ea', // purple-600
+  '#ea580c', // orange-600
+  '#0891b2', // cyan-600
+];
+
+// Update chart sizes in ResultCharts component
+const ResultCharts = ({ testResults }: { testResults: Record<string, any> }) => {
+  // Prepare data for charts
+  const adapters = Object.values(testResults);
+  
+  // Prepare data for category comparison chart
+  const categoryData = adapters.map((adapter: any) => {
+    const data: any = { name: adapter.name };
+    adapter.results.forEach((result: any) => {
+      data[result.category] = result.overallScore;
+    });
+    return data;
+  });
+
+  // Prepare data for success rate pie chart - use test success rate, not call success
+  const successRateData = adapters.map((adapter: any) => {
+    let passedTests = 0;
+    let totalTests = 0;
+    
+    // Sum up all passed tests across all categories
+    adapter.results.forEach((result: any) => {
+      const categoryPassed = result.results.filter((r: any) => r.passed).length;
+      const categoryTotal = result.results.length;
+      passedTests += categoryPassed;
+      totalTests += categoryTotal;
+    });
+    
+    return {
+      name: adapter.name,
+      value: totalTests > 0 ? (passedTests / totalTests) * 100 : 0
+    };
+  });
+
+  // Prepare data for response time chart
+  const responseTimeData = adapters.map((adapter: any) => {
+    const avgTime = adapter.results.reduce((acc: number, result: any) => {
+      return acc + (result.results.reduce((sum: number, r: any) => sum + r.duration, 0) / result.results.length);
+    }, 0) / adapter.results.length;
+
+    return {
+      name: adapter.name,
+      avgResponseTime: avgTime
+    };
+  });
+
+  return (
+    <div className="space-y-4">
+      {/* Reduced spacing */}
+      <h4 className="font-medium text-gray-900">Performance Analytics</h4>
+      
+      {/* Category Comparison Chart - reduced height */}
+      <div className="bg-white p-3 rounded-lg border border-gray-200">
+        {/* Reduced padding */}
+        <h5 className="text-sm font-medium text-gray-700 mb-2">Category Performance Comparison</h5>
+        <div className="h-60">
+          {/* Reduced height */}
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={categoryData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" />
+              <YAxis domain={[0, 100]} />
+              <Tooltip />
+              <Legend />
+              {Object.values(TestCategory).map((category, index) => (
+                <Bar 
+                  key={category} 
+                  dataKey={category} 
+                  fill={CHART_COLORS[index % CHART_COLORS.length]}
+                  name={category.charAt(0).toUpperCase() + category.slice(1)}
+                />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Success Rate Pie Chart - reduced height */}
+      <div className="bg-white p-3 rounded-lg border border-gray-200">
+        {/* Reduced padding */}
+        <h5 className="text-sm font-medium text-gray-700 mb-2">Test Success Rate</h5>
+        <div className="h-48">
+          {/* Reduced height */}
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={successRateData}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                outerRadius={60}
+                label={({ name, value }) => `${name}: ${value.toFixed(1)}%`}
+              >
+                {successRateData.map((entry, index) => (
+                  <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(value: any) => `${Number(value).toFixed(1)}%`} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Average Response Time Chart - reduced height */}
+      <div className="bg-white p-3 rounded-lg border border-gray-200">
+        {/* Reduced padding */}
+        <h5 className="text-sm font-medium text-gray-700 mb-2">Average Response Time</h5>
+        <div className="h-48">
+          {/* Reduced height */}
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={responseTimeData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" />
+              <YAxis />
+              <Tooltip formatter={(value: any) => `${Number(value).toFixed(0)}ms`} />
+              <Line 
+                type="monotone" 
+                dataKey="avgResponseTime" 
+                stroke={CHART_COLORS[0]} 
+                name="Response Time"
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Add a global request queue to prevent concurrent requests
+interface QueuedRequest {
+  adapterId: string;
+  resolve: (value: any) => void;
+  reject: (reason: any) => void;
+  timestamp: number;
+}
+
+const requestQueue: QueuedRequest[] = [];
+let isProcessingQueue = false;
+const GLOBAL_REQUEST_INTERVAL = 2000; // 2 seconds between requests globally
+
+// Process the request queue
+const processRequestQueue = async () => {
+  if (isProcessingQueue || requestQueue.length === 0) return;
+  
+  isProcessingQueue = true;
+  
+  try {
+    // Sort by timestamp to ensure FIFO order
+    requestQueue.sort((a, b) => a.timestamp - b.timestamp);
+    
+    // Process the next request
+    const request = requestQueue.shift();
+    if (request) {
+      // Wait for the global interval
+      await new Promise(resolve => setTimeout(resolve, GLOBAL_REQUEST_INTERVAL));
+      
+      // Resolve the request (the actual API call happens in the adapter)
+      request.resolve(true);
+    }
+  } catch (error) {
+    console.error('Error processing request queue:', error);
+  } finally {
+    isProcessingQueue = false;
+    
+    // Process the next request if there are any
+    if (requestQueue.length > 0) {
+      setTimeout(processRequestQueue, 100);
+    }
+  }
+};
+
+// Add a request to the queue
+const queueRequest = (adapterId: string): Promise<boolean> => {
+  return new Promise((resolve, reject) => {
+    requestQueue.push({
+      adapterId,
+      resolve,
+      reject,
+      timestamp: Date.now()
+    });
+    
+    // Start processing the queue if it's not already being processed
+    if (!isProcessingQueue) {
+      processRequestQueue();
+    }
+  });
 };
 
 export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
@@ -162,7 +466,11 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
   const [activeTab, setActiveTab] = useState<'suites' | 'tests'>('suites');
   const [testProgress, setTestProgress] = useState<TestProgress | null>(null);
   const [adapterTestStatus, setAdapterTestStatus] = useState<Record<string, AdapterTestStatus>>({});
-
+  const resultsContainerRef = useRef<HTMLDivElement>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const cancelTestRef = useRef(false);
+  const [discoveredModelsCache, setDiscoveredModelsCache] = useState<Record<string, any[]>>({});
+  
   // Reset state when modal is opened
   useEffect(() => {
     if (isOpen) {
@@ -174,8 +482,6 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
       setDiscoveryError(null);
     }
   }, [isOpen]);
-
-  if (!isOpen) return null;
 
   // Load API keys from config when adapter type changes
   useEffect(() => {
@@ -209,83 +515,81 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
       }
       
       setNewAdapterConfig(initialConfig);
-      
-      // First set the available models from the static list
-      setDiscoveredModels(prev => ({
-        ...prev,
-        [newAdapterType]: getAvailableModels(newAdapterType as ProviderType)
-      }));
 
-      // Automatically attempt to discover models if we have credentials
-      const hasCredentials = 
-        (initialConfig.apiKey) || 
-        (newAdapterType === 'ollama' && initialConfig.endpoint) ||
-        (newAdapterType === 'bedrock' && initialConfig.accessKey && initialConfig.region);
-        
-      if (hasCredentials) {
-        discoverModelsForType(newAdapterType, initialConfig);
+      // Check if we have cached models for this type
+      if (discoveredModelsCache[newAdapterType]) {
+        console.log(`Using cached models for ${newAdapterType}`);
+        setDiscoveredModels(prev => ({
+          ...prev,
+          [newAdapterType]: discoveredModelsCache[newAdapterType]
+        }));
+      } else {
+        // If no cache, use fallback models initially
+        setDiscoveredModels(prev => ({
+          ...prev,
+          [newAdapterType]: getAvailableModels(newAdapterType as ProviderType)
+        }));
+        // Then try to discover models
+        if (initialConfig.apiKey || (newAdapterType === 'ollama' && initialConfig.endpoint)) {
+          discoverModelsForType(newAdapterType, initialConfig);
+        }
       }
     }
   }, [newAdapterType]);
 
-  // Discover models for active suite
+  // Remove automatic discovery for active suite
   useEffect(() => {
     if (activeSuite?.adapters.length) {
-      discoverModels();
+      // Don't automatically discover models
+      // Models will be discovered only when user clicks the discover button
     }
   }, [activeSuite]);
 
   const discoverModelsForType = async (
-    type: TestSuite['adapters'][0]['type'], 
-    configOverride?: Record<string, string>
+    type: TestSuite['adapters'][0]['type'],
+    adapterConfig: any
   ) => {
     setIsDiscovering(true);
     setDiscoveryError(null);
-    
-    // Clear previous models for this type
-    setDiscoveredModels(prev => ({
-      ...prev,
-      [type]: []
-    }));
-    
+
+    // Check if we already have cached models for this type
+    if (discoveredModelsCache[type] && discoveredModelsCache[type].length > 0) {
+      console.log(`Using ${discoveredModelsCache[type].length} cached models for ${type}`);
+      setDiscoveredModels(prev => ({
+        ...prev,
+        [type]: discoveredModelsCache[type]
+      }));
+      setIsDiscovering(false);
+      return;
+    }
+
     try {
-      // Use provided config override or the current new adapter config
-      const adapterConfig = configOverride || newAdapterConfig;
-      
-      // Create a temporary adapter with the current config
+      console.log(`Discovering models for ${type}...`);
       const tempAdapter = {
-        id: 'temp',
-        name: 'temp',
+        id: 'temp-discovery',
+        name: 'Temporary Discovery Adapter',
         type,
         model: '',
-        config: {
-          apiKey: adapterConfig.apiKey || '',
-          endpoint: adapterConfig.endpoint || '',
-          accessKey: adapterConfig.accessKey || '',
-          secretKey: adapterConfig.secretKey || '',
-          region: adapterConfig.region || '',
-        },
+        config: adapterConfig
       };
-
-      console.log('[Model Discovery] Attempting discovery for:', type);
-      console.log('[Model Discovery] Using stored credentials from config');
       
       const models = await discoverAvailableModels([tempAdapter]);
+      const discoveredModels = models[type] || [];
       
-      if (models[type] && models[type].length > 0) {
-        console.log(`[TestSuiteManager] Setting ${models[type].length} discovered models for ${type}`);
-        setDiscoveredModels(prev => ({
-          ...prev,
-          [type]: models[type] || []
-        }));
-      } else {
-        setDiscoveryError(`No models found for ${type}. Please check your credentials and try again.`);
-        // Don't set fallback models unless specifically requested by the user
-      }
+      // Update both the current state and cache
+      setDiscoveredModels(prev => ({
+        ...prev,
+        [type]: discoveredModels
+      }));
+      setDiscoveredModelsCache(prev => ({
+        ...prev,
+        [type]: discoveredModels
+      }));
+
+      console.log(`Successfully discovered ${discoveredModels.length} models for ${type}`);
     } catch (error) {
-      console.error(`[TestSuiteManager] Failed to discover models for ${type}:`, error);
-      setDiscoveryError(`Error discovering models: ${error instanceof Error ? error.message : String(error)}`);
-      // Don't set fallback models unless specifically requested by the user
+      console.error('Error discovering models:', error);
+      setDiscoveryError(error instanceof Error ? error.message : 'Failed to discover models');
     } finally {
       setIsDiscovering(false);
     }
@@ -534,6 +838,24 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
     }
   };
 
+  // Add a helper function for chunking the test queue
+  const chunkArray = <T,>(array: T[], size: number): T[][] => {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += size) {
+      chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
+  };
+
+  // Add reset function for test state
+  const resetTestState = () => {
+    setIsRunningTests(false);
+    setTestProgress(null);
+    setIsCancelling(false);
+    cancelTestRef.current = false;
+  };
+
+  // Update handleRunTests
   const handleRunTests = async () => {
     if (!activeSuite || !activeSuite.adapters.length) return;
     
@@ -546,31 +868,19 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
     setIsRunningTests(true);
     setTestResults({});
     setTestProgress(null);
+    cancelTestRef.current = false;
 
     // Clear rate limit tracking at the start of a new test run
     rateLimitMap.clear();
+    // Clear the request queue
+    requestQueue.length = 0;
+    isProcessingQueue = false;
 
     try {
       const results: Record<string, any> = {};
-
-      // Calculate total tests
-      const totalTests = activeSuite.adapters.length * 
-        activeSuite.categories.reduce((sum, category) => {
-          const testCount = category === TestCategory.CRYPTIC ? crypticTests.length : codeTests.length;
-          console.log(`Category ${category} has ${testCount} tests`);
-          return sum + testCount;
-        }, 0) * iterations;
-
-      console.log(`Total tests to run: ${totalTests}`);
-      let completedTests = 0;
-
+      
+      // Initialize results structure for all adapters
       for (const adapterConfig of activeSuite.adapters) {
-        console.log(`\n%cTesting Adapter: ${adapterConfig.name}`, 'color: purple; font-weight: bold');
-        console.log('Type:', adapterConfig.type);
-        console.log('Model:', adapterConfig.model);
-        
-        const adapter = createAdapter(adapterConfig);
-        
         results[adapterConfig.id] = {
           name: adapterConfig.name,
           type: adapterConfig.type,
@@ -578,143 +888,171 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
           results: [],
           outputs: [] as TestOutput[]
         };
+      }
 
+      // Create test queue
+      type TestQueueItem = {
+        category: TestCategory;
+        test: CrypticTest | CodeTest;
+        iteration: number;
+        adapter: {
+          config: any;
+          adapter: LLMAdapter;
+          runner: TestRunner;
+        };
+      };
+
+      const testQueue: TestQueueItem[] = [];
+
+      // Create all adapters upfront
+      const adapters = activeSuite.adapters.map(adapterConfig => ({
+        config: adapterConfig,
+        adapter: createAdapter(adapterConfig),
+        runner: new TestRunner({
+          iterations,
+          categories: activeSuite.categories,
+          validators: {
+            default: createAdapter(adapterConfig)
+          }
+        })
+      }));
+
+      // Build test queue - IMPORTANT: Process one adapter at a time
+      for (const adapterSetup of adapters) {
         for (const category of activeSuite.categories) {
-          console.log(`\n%cRunning ${category} tests for ${adapterConfig.name}`, 'color: blue; font-weight: bold');
-          
-          const config = {
-            iterations,
-            categories: [category],
-            validators: {
-              default: adapter
-            }
-          };
-
-          const runner = new TestRunner(config);
           const testsToRun = (category === TestCategory.CRYPTIC ? crypticTests : codeTests) as (CrypticTest | CodeTest)[];
-
-          console.log(`Starting ${testsToRun.length} tests with ${iterations} iterations each`);
-          
-          setTestProgress({
-            currentAdapter: adapterConfig.name,
-            currentCategory: category,
-            currentTest: '',
-            completedTests: 0,
-            totalTests,
-            currentIteration: 0,
-            totalIterations: iterations
-          });
-
-          switch (category) {
-            case TestCategory.CRYPTIC:
-            case TestCategory.CODE:
-              for (let i = 0; i < iterations; i++) {
-                console.log(`\n%cIteration ${i + 1}/${iterations}`, 'color: purple');
-                
-                for (const test of testsToRun) {
-                  console.group(`\n%cTest: ${test.prompt}`, 'color: blue');
-                  const expectedAnswer = test.expectedResult;
-                  console.log('%cExpected answer:', 'color: orange', expectedAnswer);
-                  
-                  setTestProgress(prev => ({
-                    ...prev!,
-                    currentTest: test.prompt,
-                    currentIteration: i + 1,
-                    completedTests: (prev?.completedTests || 0) + 1
-                  }));
-
-                  const output = await callWithRetry(adapter, test.prompt, category);
-                  results[adapterConfig.id].outputs.push(output);
-
-                  // Compare normalized answers
-                  const normalizedExpected = normalizeAnswer(expectedAnswer.toString());
-                  const normalizedResponse = output.parsedResponse?.answer ? normalizeAnswer(output.parsedResponse.answer) : '';
-                  const passed = normalizedExpected === normalizedResponse;
-
-                  const result = {
-                    ...await runner.runTest(adapter, test, i),
-                    passed // Override the passed value with our normalized comparison
-                  };
-
-                  console.log('%cTest result:', 'color: ' + (result.passed ? 'green' : 'red'), {
-                    passed: result.passed,
-                    duration: result.duration + 'ms',
-                    response: result.response,
-                    expected: expectedAnswer,
-                    normalizedResponse,
-                    normalizedExpected
-                  });
-                  console.groupEnd();
-
-                  // Update results in real-time
-                  const currentResults = results[adapterConfig.id].results;
-                  const categoryResult = currentResults.find((r: any) => r.category === category);
-                  
-                  if (categoryResult) {
-                    categoryResult.results.push(result);
-                  } else {
-                    currentResults.push({
-                      category,
-                      results: [result],
-                      categoryScores: new Map([[category, 0]]),
-                      overallScore: 0
-                    });
-                  }
-
-                  // Update scores
-                  const categoryResults = currentResults.find((r: any) => r.category === category);
-                  const passedTests = categoryResults.results.filter((r: any) => r.passed).length;
-                  const totalTestsInCategory = categoryResults.results.length;
-                  const score = (passedTests / totalTestsInCategory) * 100;
-                  
-                  categoryResults.categoryScores.set(category, score);
-                  categoryResults.overallScore = score;
-
-                  // Force a re-render with new results
-                  setTestResults({ ...results });
-                }
-              }
-              break;
-            default:
-              console.log(`Unknown category: ${category}`);
-              continue;
+          for (let i = 0; i < iterations; i++) {
+            for (const test of testsToRun) {
+              testQueue.push({
+                category,
+                test,
+                iteration: i,
+                adapter: adapterSetup
+              });
+            }
           }
         }
       }
 
+      const totalTests = testQueue.length;
+      let completedTests = 0;
+
+      // Process test queue sequentially
+      for (const queueItem of testQueue) {
+        // Check for cancellation
+        if (cancelTestRef.current) {
+          console.log('%cTest execution cancelled by user', 'color: orange');
+          break;
+        }
+
+        const { category, test, iteration, adapter: { config: adapterConfig, adapter, runner } } = queueItem;
+
+        setTestProgress({
+          currentAdapter: adapterConfig.name,
+          currentCategory: category,
+          currentTest: test.prompt,
+          completedTests: completedTests++,
+          totalTests,
+          currentIteration: iteration + 1,
+          totalIterations: iterations
+        });
+
+        // Add delay between requests
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        const output = await callWithRetry(adapter, test.prompt, category);
+
+        // Compare normalized answers and update the passed status
+        const normalizedExpected = normalizeAnswer(test.expectedResult.toString());
+        const normalizedResponse = output.parsedResponse?.answer ? normalizeAnswer(output.parsedResponse.answer) : '';
+        const passed = normalizedExpected === normalizedResponse;
+
+        // Update the passed status in the output
+        if (output.parsedResponse) {
+          output.parsedResponse.passed = passed;
+        }
+
+        results[adapterConfig.id].outputs.push(output);
+
+        // Create result for test runner
+        const result = {
+          ...await runner.runTest(adapter, test, iteration),
+          passed
+        };
+
+        // Update results in real-time
+        const currentResults = results[adapterConfig.id].results;
+        const categoryResult = currentResults.find((r: any) => r.category === category);
+        
+        if (categoryResult) {
+          categoryResult.results.push(result);
+        } else {
+          currentResults.push({
+            category,
+            results: [result],
+            categoryScores: new Map([[category, 0]]),
+            overallScore: 0
+          });
+        }
+
+        // Update scores
+        const categoryResults = currentResults.find((r: any) => r.category === category);
+        const passedTests = categoryResults.results.filter((r: any) => r.passed).length;
+        const totalTestsInCategory = categoryResults.results.length;
+        const score = (passedTests / totalTestsInCategory) * 100;
+        
+        categoryResults.categoryScores.set(category, score);
+        categoryResults.overallScore = score;
+
+        // Force a re-render with new results
+        setTestResults(prevResults => {
+          const newResults = { ...prevResults };
+          newResults[adapterConfig.id] = { ...results[adapterConfig.id] };
+          return newResults;
+        });
+
+        // Small delay to ensure UI updates
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+
       console.log('\n%cAll tests completed. Final results:', 'color: blue; font-weight: bold', results);
-      setTestResults(results);
+      setTestResults({ ...results });
     } catch (error) {
       console.error('%cError running tests:', 'color: red', error);
       setTestResults({
         error: error instanceof Error ? error.message : 'An error occurred while running tests'
       });
     } finally {
-      setIsRunningTests(false);
-      setTestProgress(null);
+      resetTestState();
     }
   };
 
-  const callWithRetry = async (adapter: any, prompt: string, category: TestCategory, maxRetries = 3): Promise<TestOutput> => {
+  const callWithRetry = async (adapter: any, prompt: string, category: TestCategory, maxRetries = 10): Promise<TestOutput> => {
     let retryCount = 0;
     let lastError: Error | null = null;
     const adapterId = (adapter as any).id || 'unknown';
 
-    while (retryCount < maxRetries) {
+    // Keep retrying indefinitely until we get a successful response
+    while (true) {
       try {
-        console.log(`\n%cAttempt ${retryCount + 1}/${maxRetries}`, 'color: blue');
+        console.log(`\n%cAttempt ${retryCount + 1}`, 'color: blue');
         
         // Calculate and apply backoff
         const backoff = calculateBackoff(adapterId);
         if (backoff > 0) {
-          console.log(`%cWaiting ${Math.round(backoff)}ms before request...`, 'color: orange');
+          console.log(`%cWaiting ${Math.round(backoff/1000)} seconds before request...`, 'color: orange');
           await new Promise(resolve => setTimeout(resolve, backoff));
         }
 
         const fullPrompt = `${CRYPTIC_SYSTEM_PROMPT}\n\nClue: ${prompt}`;
         console.log('%cSending prompt:', 'color: blue', fullPrompt);
         
+        // Queue the request to prevent concurrent API calls
+        await queueRequest(adapterId);
+        
+        const startTime = Date.now();
         const response = await adapter.call(fullPrompt);
+        const duration = Date.now() - startTime;
         console.log('%cRaw response received:', 'color: green', response);
 
         // Update rate limit info on success
@@ -737,8 +1075,14 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
           });
           return {
             prompt: fullPrompt,
+            testName: prompt,
             rawResponse: cleanResponse,
-            parsedResponse
+            duration,
+            parsedResponse: {
+              scratchpad: parsedResponse.scratchpad,
+              answer: parsedResponse.answer,
+              passed: false
+            }
           };
         } catch (parseError) {
           console.warn('%cFailed to parse JSON response:', 'color: orange', parseError);
@@ -754,8 +1098,14 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
             console.log('%cParsed response (after additional cleaning):', 'color: green', parsedResponse);
             return {
               prompt: fullPrompt,
+              testName: prompt,
               rawResponse: cleanerResponse,
-              parsedResponse
+              duration,
+              parsedResponse: {
+                scratchpad: parsedResponse.scratchpad,
+                answer: parsedResponse.answer,
+                passed: false
+              }
             };
           } catch (secondError: unknown) {
             const errorMessage = secondError instanceof Error ? secondError.message : String(secondError);
@@ -770,49 +1120,79 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
         const isRateLimit = error instanceof Error && (
           error.message.includes('rate limit') ||
           error.message.includes('429') ||
-          error.message.includes('too many requests') ||
-          error.message.toLowerCase().includes('google api error') // Add specific check for Google API errors
+          error.message.includes('too many requests')
+        );
+
+        const isQuotaExceeded = error instanceof Error && (
+          error.message.includes('exceeded your current quota') ||
+          error.message.includes('quota exceeded') ||
+          error.message.includes('billing details')
+        );
+
+        const isNetworkError = error instanceof Error && (
+          error.message.includes('Failed to fetch') ||
+          error.message.includes('network') ||
+          error.message.includes('ERR_CONNECTION') ||
+          error.message.includes('connection closed') ||
+          error.message.includes('timeout') ||
+          error.message.includes('503')
         );
         
         if (isRateLimit) {
-          // For Google API, use longer reset times
-          const resetTime = adapterId.includes('google')
-            ? Date.now() + 120000 // 2 minutes for Google
-            : Date.now() + 60000; // 1 minute for others
+          // For rate limits, use standard reset time
+          const resetTime = Date.now() + 60000; // 1 minute
           updateRateLimitInfo(adapterId, true, resetTime);
           console.log(`%cRate limit hit for ${adapterId}, will retry after ${new Date(resetTime).toLocaleTimeString()}`, 'color: orange');
-          retryCount++; // Increment retry count for rate limits
-          continue; // Skip the shouldRetry check and continue with retry
+          retryCount++;
+          continue;
         }
         
-        const shouldRetry = 
-          error instanceof Error && (
-            error.message.includes('timeout') ||
-            error.message.includes('network') ||
-            error.message.includes('connection') ||
-            error.message.includes('503')
-          );
-        
-        if (!shouldRetry) {
-          console.log('%cError is not retryable, giving up', 'color: red');
-          break;
+        if (isQuotaExceeded) {
+          // For quota exceeded, mark it in the rate limit info
+          updateRateLimitInfo(adapterId, false, undefined, true);
+          
+          // Calculate wait time based on how many times we've hit the quota
+          const info = getRateLimitInfo(adapterId);
+          let waitTime = 5 * 60 * 1000; // 5 minutes default
+          
+          if (info.quotaExceededCount > 3) {
+            waitTime = 15 * 60 * 1000; // 15 minutes
+          }
+          
+          if (info.quotaExceededCount > 5) {
+            waitTime = 30 * 60 * 1000; // 30 minutes
+          }
+          
+          console.log(`%cQuota exceeded for ${adapterId}, waiting ${Math.round(waitTime/1000)} seconds before retry (attempt ${info.quotaExceededCount})`, 'color: red');
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          retryCount++;
+          continue;
         }
         
+        if (isNetworkError) {
+          console.log('%cNetwork error detected, will retry', 'color: orange');
+          retryCount++;
+          // Add exponential backoff for network errors
+          await new Promise(resolve => setTimeout(resolve, Math.min(1000 * Math.pow(2, retryCount), 10000)));
+          continue;
+        }
+        
+        // For non-retryable errors, we'll still retry but with a longer delay
+        console.log('%cNon-retryable error detected, will still retry with longer delay', 'color: red');
         retryCount++;
-        if (retryCount === maxRetries) {
-          console.log('%cMax retries reached, giving up', 'color: red');
-          break;
-        }
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 second delay for other errors
+        continue;
       }
     }
-
-    return {
-      prompt,
-      rawResponse: '',
-      error: `API Error after ${retryCount} attempts: ${lastError?.message || 'Unknown error'}`
-    };
   };
 
+  // Add stop handler
+  const handleStopTests = () => {
+    setIsCancelling(true);
+    cancelTestRef.current = true;
+  };
+
+  // Update the progress render function
   const renderProgress = () => {
     if (!testProgress) return null;
 
@@ -823,9 +1203,18 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <h4 className="font-medium text-gray-900">Test Progress</h4>
-            <span className="text-sm text-gray-500">
-              {testProgress.completedTests} / {testProgress.totalTests} tests completed
-            </span>
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-gray-500">
+                {testProgress.completedTests} / {testProgress.totalTests} tests completed
+              </span>
+              <button
+                onClick={handleStopTests}
+                disabled={isCancelling}
+                className="px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-150 text-sm"
+              >
+                {isCancelling ? 'Stopping...' : 'Stop Tests'}
+              </button>
+            </div>
           </div>
           
           <div className="space-y-2">
@@ -841,12 +1230,24 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
               <p>Category: {testProgress.currentCategory}</p>
               <p>Iteration: {testProgress.currentIteration} / {testProgress.totalIterations}</p>
               <p className="mt-2 text-xs italic">{testProgress.currentTest}</p>
+              {isCancelling && (
+                <p className="mt-2 text-sm text-orange-600">
+                  Stopping after current test completes...
+                </p>
+              )}
             </div>
           </div>
         </div>
       </div>
     );
   };
+
+  // Add effect to scroll to bottom when test results update
+  useEffect(() => {
+    if (resultsContainerRef.current && testResults && Object.keys(testResults).length > 0) {
+      resultsContainerRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [testResults]);
 
   const renderTestResults = () => {
     if (testResults.error) {
@@ -859,75 +1260,189 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
 
     if (!Object.keys(testResults).length) return null;
 
+    // Group results by category for comparison
+    const categoryResults: Record<string, Array<{
+      adapterId: string;
+      adapterName: string;
+      adapterType: string;
+      model: string;
+      score: number;
+      outputs: TestOutput[];
+    }>> = {};
+
+    Object.entries(testResults).forEach(([adapterId, data]: [string, any]) => {
+      data.results.forEach((result: any) => {
+        const category = result.category;
+        if (!categoryResults[category]) {
+          categoryResults[category] = [];
+        }
+        categoryResults[category].push({
+          adapterId,
+          adapterName: data.name,
+          adapterType: data.type,
+          model: data.model,
+          score: result.overallScore,
+          outputs: data.outputs || []
+        });
+      });
+    });
+
     return (
-      <div className="mt-8 space-y-6">
+      <div ref={resultsContainerRef} className="mt-8 space-y-6">
         <h3 className="text-lg font-medium text-gray-900">Test Results</h3>
-        {Object.entries(testResults).map(([adapterId, data]: [string, any]) => (
-          <div key={adapterId} className="bg-white rounded-lg border border-gray-200 p-4">
-            <div className="mb-4">
-              <h4 className="font-medium text-gray-900">{data.name}</h4>
-              <p className="text-sm text-gray-500">
-                {data.type} - {data.model}
-              </p>
-            </div>
-            
-            {/* Test Outputs */}
-            {data.outputs?.length > 0 && (
-              <div className="mb-4 space-y-4">
-                <h5 className="font-medium text-gray-700">Test Outputs</h5>
-                {data.outputs.map((output: TestOutput, index: number) => (
-                  <div key={index} className="border border-gray-100 rounded p-3 bg-gray-50">
-                    <p className="font-medium text-sm">Prompt: {output.prompt}</p>
-                    {output.error ? (
-                      <p className="text-red-600 text-sm mt-2">{output.error}</p>
-                    ) : (
-                      <>
-                        <div className="mt-2 text-sm">
-                          <p className="text-gray-600">Scratchpad:</p>
-                          <pre className="mt-1 whitespace-pre-wrap text-gray-800 bg-gray-100 p-2 rounded">
-                            {output.parsedResponse?.scratchpad || 'No scratchpad available'}
-                          </pre>
+
+        {/* Comparison Summary */}
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <h4 className="font-medium text-gray-900 mb-4">Performance Comparison</h4>
+          {Object.entries(categoryResults).map(([category, results]) => (
+            <div key={category} className="mb-6 last:mb-0">
+              <h5 className="font-medium text-gray-700 mb-2">
+                {category.charAt(0).toUpperCase() + category.slice(1)} Category
+              </h5>
+              <div className="space-y-2">
+                {results
+                  .sort((a, b) => b.score - a.score) // Sort by score descending
+                  .map((result, index) => (
+                  <div key={result.adapterId} className="flex items-center gap-4">
+                    <div className="w-48 truncate">
+                      <span className={`inline-block w-6 text-${index === 0 ? 'yellow' : 'gray'}-600`}>
+                        {index === 0 ? '🏆' : `${index + 1}.`}
+                      </span>
+                      {result.adapterName}
+                    </div>
+                    <div className="flex-1">
+                      <div className="relative h-6 bg-gray-100 rounded-full overflow-hidden">
+                        <div 
+                          className="absolute left-0 top-0 h-full bg-primary-600 transition-all duration-500"
+                          style={{ width: `${result.score}%` }}
+                        />
+                        <div className="absolute inset-0 flex items-center justify-end px-2">
+                          <span className="text-sm font-medium text-gray-900">
+                            {result.score.toFixed(1)}%
+                          </span>
                         </div>
-                        <div className="mt-2 text-sm">
-                          <p className="text-gray-600">Answer:</p>
-                          <pre className="mt-1 whitespace-pre-wrap text-gray-800 bg-gray-100 p-2 rounded">
-                            {output.parsedResponse?.answer || output.rawResponse}
-                          </pre>
-                        </div>
-                      </>
-                    )}
+                      </div>
+                    </div>
+                    <div className="w-48 text-sm text-gray-500 truncate">
+                      {result.model}
+                    </div>
                   </div>
                 ))}
               </div>
-            )}
+            </div>
+          ))}
+        </div>
 
-            {/* Existing Results Display */}
-            {data.results.map((result: any, index: number) => (
-              <div key={index} className="mt-4">
-                <h5 className="font-medium text-gray-700">
-                  {result.category.charAt(0).toUpperCase() + result.category.slice(1)} Tests
-                </h5>
-                <div className="mt-2 grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-sm text-gray-500">Overall Score</p>
-                    <p className="text-2xl font-bold text-gray-900">
-                      {result.overallScore.toFixed(1)}%
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-500">Category Score</p>
-                    <p className="text-2xl font-bold text-gray-900">
-                      {result.categoryScores.get(result.category)?.toFixed(1)}%
-                    </p>
+        {/* Detailed Results by Adapter */}
+        <div className="space-y-4">
+          <h4 className="font-medium text-gray-900">Detailed Results by Adapter</h4>
+          {Object.entries(testResults).map(([adapterId, data]: [string, any]) => (
+            <div key={adapterId} className="bg-white rounded-lg border border-gray-200 p-4">
+              <div className="mb-4">
+                <h4 className="font-medium text-gray-900">{data.name}</h4>
+                <p className="text-sm text-gray-500">
+                  {data.type} - {data.model}
+                </p>
+              </div>
+              
+              {/* Test Outputs */}
+              {data.outputs?.length > 0 && (
+                <div className="mb-4 space-y-4">
+                  <h5 className="font-medium text-gray-700">Test Outputs</h5>
+                  {data.outputs.map((output: TestOutput, index: number) => (
+                    <div key={index} className="p-3 bg-gray-50 rounded-lg text-sm">
+                      <div className="flex justify-between mb-2">
+                        <span className="font-medium">{output.testName}</span>
+                        <span className={output.error ? 'text-red-600' : (output.parsedResponse?.passed ? 'text-green-600' : 'text-red-600')}>
+                          {output.error ? 'Error' : (output.parsedResponse?.passed ? 'Passed' : 'Failed')}
+                        </span>
+                      </div>
+                      {output.error ? (
+                        <div className="text-red-600 whitespace-pre-wrap">{output.error}</div>
+                      ) : (
+                        <>
+                          <div className="text-gray-700 mb-2">
+                            <strong>Q:</strong> {output.prompt}
+                          </div>
+                          <div className="text-gray-700 whitespace-pre-wrap">
+                            <strong>A:</strong> {output.parsedResponse?.answer || output.rawResponse}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Category Results */}
+              {data.results.map((result: any, index: number) => (
+                <div key={index} className="mt-4">
+                  <h5 className="font-medium text-gray-700">
+                    {result.category.charAt(0).toUpperCase() + result.category.slice(1)} Tests
+                  </h5>
+                  <div className="mt-2 grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-500">Overall Score</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {result.overallScore.toFixed(1)}%
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Category Score</p>
+                      <p className="text-2xl font-bold text-gray-900">
+                        {result.categoryScores.get(result.category)?.toFixed(1)}%
+                      </p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        ))}
+              ))}
+            </div>
+          ))}
+        </div>
+        
+        {/* Charts Section - moved to bottom so always visible */}
+        <div id="performance-charts" className="sticky bottom-0 pt-6 pb-4 bg-white border-t border-gray-200">
+          {Object.keys(testResults).length > 0 && <ResultCharts testResults={testResults} />}
+        </div>
       </div>
     );
   };
+
+  // Update the model selection handler
+  const handleModelSelect = (modelId: string) => {
+    setNewAdapterModel(modelId);
+    
+    // Find the model name from discovered models
+    const selectedModel = discoveredModels[newAdapterType]?.find((model: any) => model.id === modelId);
+    if (selectedModel) {
+      // Only set the name if it's empty or was previously auto-set
+      if (!newAdapterName || newAdapterName === newAdapterModel) {
+        setNewAdapterName(selectedModel.name || modelId);
+      }
+    }
+  };
+
+  // Add a function to clear the cache for a specific type and rediscover models
+  const handleRefreshModels = () => {
+    if (newAdapterType) {
+      // Clear the cache for this type
+      setDiscoveredModelsCache(prev => ({
+        ...prev,
+        [newAdapterType]: []
+      }));
+      
+      // Re-discover models
+      discoverModelsForType(
+        newAdapterType, 
+        newAdapterConfig
+      );
+    }
+  };
+
+  // Load rate limit info when component mounts
+  useEffect(() => {
+    loadRateLimitInfo();
+  }, []);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -1218,32 +1733,50 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
                             <label className="block text-sm font-medium text-gray-700 mb-1">
                               Model
                             </label>
-                            {isDiscovering ? (
-                              <div className="text-sm text-gray-500">Discovering models...</div>
-                            ) : discoveryError ? (
-                              <div className="space-y-2">
-                                <div className="text-sm text-red-600">{discoveryError}</div>
-                                <button
-                                  onClick={() => useFallbackModels(newAdapterType)}
-                                  className="text-sm text-primary-600 hover:text-primary-700"
-                                >
-                                  Use available models instead
-                                </button>
-                              </div>
-                            ) : (
-                              <select
-                                value={newAdapterModel}
-                                onChange={(e) => setNewAdapterModel(e.target.value)}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                              >
-                                <option value="">Select a model</option>
-                                {discoveredModels[newAdapterType]?.map((model: any) => (
-                                  <option key={model.id} value={model.id}>
-                                    {model.name}
-                                  </option>
-                                ))}
-                              </select>
-                            )}
+                            <div className="space-y-2">
+                              {isDiscovering ? (
+                                <div className="text-sm text-gray-500">Discovering models...</div>
+                              ) : (
+                                <>
+                                  <div className="flex gap-2">
+                                    <select
+                                      value={newAdapterModel}
+                                      onChange={(e) => handleModelSelect(e.target.value)}
+                                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                    >
+                                      <option value="">Select a model</option>
+                                      {discoveredModels[newAdapterType]?.map((model: any) => (
+                                        <option key={model.id} value={model.id}>
+                                          {model.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      onClick={handleRefreshModels}
+                                      className="inline-flex items-center px-2.5 py-1.5 border border-gray-300 shadow-sm text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                                      disabled={isDiscovering}
+                                    >
+                                      <svg className="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                      </svg>
+                                      Refresh
+                                    </button>
+                                  </div>
+                                  {discoveryError && (
+                                    <div className="text-sm text-red-500 mt-1 flex items-center">
+                                      <span className="mr-2">Error: {discoveryError}</span>
+                                      <button 
+                                        onClick={() => useFallbackModels(newAdapterType)} 
+                                        className="text-xs text-blue-500 hover:underline"
+                                      >
+                                        Use fallback models
+                                      </button>
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
                           </div>
 
                           <button
@@ -1377,4 +1910,4 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
       </div>
     </div>
   );
-} 
+}

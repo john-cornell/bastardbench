@@ -182,5 +182,125 @@ export const crypticTests: CrypticTest[] = [
     answer: 'shampoo',
     expectedResult: 'shampoo',
     category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-23',
+    prompt: 'Fear mistake after cuppa (6)',
+    answerLength: '6',
+    answer: 'terror',
+    expectedResult: 'terror',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-24',
+    prompt: 'Fraud snagged, without question, by southern statement of proof, not for the first time (6)',
+    answerLength: '6',
+    answer: 'second',
+    expectedResult: 'second',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-25',
+    prompt: 'Beg first character in popular mixed fruit (6)',
+    answerLength: '6',
+    answer: 'appeal',
+    expectedResult: 'appeal',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-26',
+    prompt: 'Proceed, fool (4)',
+    answerLength: '4',
+    answer: 'goon',
+    expectedResult: 'goon',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-27',
+    prompt: 'Beer flavouring and northern whisky will have children jumping in joy (9)',
+    answerLength: '9',
+    answer: 'hopscotch',
+    expectedResult: 'hopscotch',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-28',
+    prompt: 'Crazy bots powered up city (6)',
+    answerLength: '6',
+    answer: 'boston',
+    expectedResult: 'boston',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-29',
+    prompt: 'Opt not to play cards marked badly and aged (4)',
+    answerLength: '4',
+    answer: 'fold',
+    expectedResult: 'fold',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-30',
+    prompt: 'Space alien provides coverage (7)',
+    answerLength: '7',
+    answer: 'blanket',
+    expectedResult: 'blanket',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-31',
+    prompt: 'Like greatest operating system, bad for the lungs (8)',
+    answerLength: '8',
+    answer: 'asbestos',
+    expectedResult: 'asbestos',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-32',
+    prompt: 'Wends its way, directionless, without a straighten up (4)',
+    answerLength: '4',
+    answer: 'tidy',
+    expectedResult: 'tidy',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-33',
+    prompt: 'Go around the French stare (4)',
+    answerLength: '4',
+    answer: 'ogle',
+    expectedResult: 'ogle',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-34',
+    prompt: 'Doesn\'t matter which surrounds unit of matter to create biological systems (7)',
+    answerLength: '7',
+    answer: 'anatomy',
+    expectedResult: 'anatomy',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-35',
+    prompt: 'Two starters around initial huge moment of inspiration (3)',
+    answerLength: '3',
+    answer: 'aha',
+    expectedResult: 'aha',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-36',
+    prompt: 'Positive sign the french can make me laugh (6)',
+    answerLength: '6',
+    answer: 'tickle',
+    expectedResult: 'tickle',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-37',
+    prompt: 'Check item is done, sounds like a pass (6)',
+    answerLength: '6',
+    answer: 'ticket',
+    expectedResult: 'ticket',
+    category: TestCategory.CRYPTIC
   }
 ]; 

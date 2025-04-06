@@ -186,15 +186,35 @@ app.post('/api/ollama', (async (req: Request, res: Response) => {
 // Google proxy
 app.post('/api/google', (async (req: Request, res: Response) => {
   try {
-    const { apiKey, prompt } = req.body;
+    const { apiKey, prompt, model = 'gemini-pro', apiPath } = req.body;
     if (!apiKey) {
       return res.status(400).json({ error: 'API key is required' });
     }
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent', {
+
+    // Determine correct API version based on model name
+    // Default to the apiPath from the adapter if provided, otherwise intelligently select
+    let apiVersion = apiPath || 'v1';
+    
+    // Use v1beta for experimental models or models we know need v1beta
+    if (model.includes('-exp') || 
+        model.includes('experimental') || 
+        model.includes('preview') || 
+        model.includes('thinking') ||
+        model.includes('gemma-') ||
+        model.includes('2.5-pro') ||
+        model.includes('latest')) {
+      apiVersion = 'v1beta';
+    }
+
+    // Handle models that have the 'models/' prefix or need it added
+    const modelId = model.startsWith('models/') ? model : `models/${model}`;
+
+    console.log(`[Google Proxy] Using model: ${modelId} with API version: ${apiVersion}`);
+    
+    const response = await fetch(`https://generativelanguage.googleapis.com/${apiVersion}/${modelId}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
@@ -203,14 +223,42 @@ app.post('/api/google', (async (req: Request, res: Response) => {
         },
       }),
     });
+    
     if (!response.ok) {
       const errorData = await response.json() as { error?: { message?: string } };
+      
+      // If we get a model not found error in the current API version, try the other version
+      if (errorData.error?.message?.includes('is not found for API version') && !req.body.retried) {
+        // Flip API version and retry
+        const alternateVersion = apiVersion === 'v1' ? 'v1beta' : 'v1';
+        console.log(`[Google Proxy] Model not found in ${apiVersion}, trying ${alternateVersion}...`);
+        
+        // Make a new request to this same endpoint with the alternate version
+        const retryReq = { 
+          ...req.body, 
+          apiPath: alternateVersion,
+          retried: true // Flag to prevent infinite retries
+        };
+        
+        // Recursive call to this same endpoint
+        const newRes = await fetch(`http://localhost:${PORT}/api/google`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(retryReq)
+        });
+        
+        // Return the result of the retry
+        return res.status(newRes.status).json(await newRes.json());
+      }
+      
       throw new Error(errorData.error?.message || 'Google API error');
     }
+    
     const data = await response.json() as GoogleResponse;
     if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
       throw new Error('Invalid response format from Google API');
     }
+    
     res.json({ response: data.candidates[0].content.parts[0].text });
   } catch (error) {
     console.error('Google API error:', error);
