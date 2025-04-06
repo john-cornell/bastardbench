@@ -56,5 +56,6 @@ export const AVAILABLE_MODELS = {
   google: [
     { id: 'gemini-pro', name: 'Gemini Pro' },
     { id: 'gemini-ultra', name: 'Gemini Ultra' },
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' }
   ],
 } as const; 

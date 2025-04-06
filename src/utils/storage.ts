@@ -1,6 +1,6 @@
 import { encrypt, decrypt } from './encryption';
 
-interface ConfigData {
+export interface ConfigData {
   openAIKey: string;
   anthropicKey: string;
   azureKey: string;
@@ -15,6 +15,22 @@ interface ConfigData {
   maxTokens: number;
   showAnswers: boolean;
 }
+
+const DEFAULT_CONFIG: ConfigData = {
+  openAIKey: '',
+  anthropicKey: '',
+  azureKey: '',
+  azureEndpoint: '',
+  bedrockKey: '',
+  bedrockRegion: '',
+  ollamaEndpoint: '',
+  googleKey: '',
+  iterations: 5,
+  timeout: 30000,
+  temperature: 0.7,
+  maxTokens: 2048,
+  showAnswers: true
+};
 
 const STORAGE_KEY = 'bastard-bench-config';
 
@@ -78,13 +94,14 @@ export const saveConfig = (config: ConfigData): string[] => {
 export const loadConfig = (): ConfigData => {
   try {
     const encryptedData = localStorage.getItem(STORAGE_KEY);
-    if (!encryptedData) return getDefaultConfig();
+    if (!encryptedData) return DEFAULT_CONFIG;
     
     const decryptedData = decrypt(encryptedData);
-    return JSON.parse(decryptedData);
+    const parsedData = JSON.parse(decryptedData);
+    return { ...DEFAULT_CONFIG, ...parsedData };
   } catch (e) {
     console.error('Failed to load config:', e);
-    return getDefaultConfig();
+    return DEFAULT_CONFIG;
   }
 };
 
@@ -94,20 +111,4 @@ export const clearConfig = (): void => {
   } catch (e) {
     console.error('Failed to clear config:', e);
   }
-};
-
-const getDefaultConfig = (): ConfigData => ({
-  openAIKey: '',
-  anthropicKey: '',
-  azureKey: '',
-  azureEndpoint: '',
-  bedrockKey: '',
-  bedrockRegion: '',
-  ollamaEndpoint: 'http://localhost:11434',
-  googleKey: '',
-  iterations: 5,
-  timeout: 30000,
-  temperature: 0.7,
-  maxTokens: 1000,
-  showAnswers: false,
-}); 
+}; 

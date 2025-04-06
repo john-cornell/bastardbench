@@ -1,3 +1,5 @@
+import { LLMAdapter, TestCase, TestResult, BenchmarkResult, BenchmarkConfig, TestCategory } from '../types/llm';
+
 export class TestRunner {
   constructor(private config: BenchmarkConfig) {}
 
@@ -25,12 +27,12 @@ export class TestRunner {
     };
   }
 
-  async runBenchmark(adapter: LLMAdapter): Promise<BenchmarkResult> {
+  async runBenchmark(adapter: LLMAdapter, tests: TestCase[]): Promise<BenchmarkResult> {
     const results: TestResult[] = [];
     const categoryScores = new Map<TestCategory, number>();
 
     for (const category of this.config.categories) {
-      const categoryTests = testCases.filter(test => test.category === category);
+      const categoryTests = tests.filter(test => test.category === category);
       let categoryPassed = 0;
 
       for (const test of categoryTests) {

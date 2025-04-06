@@ -48,6 +48,8 @@ const FALLBACK_MODELS: ProviderModels = {
   google: [
     { id: 'gemini-pro', name: 'Gemini Pro', contextWindow: 32768 },
     { id: 'gemini-pro-vision', name: 'Gemini Pro Vision', contextWindow: 32768 },
+    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', contextWindow: 32768 },
+    { id: 'gemini-2.0-pro', name: 'Gemini 2.0 Pro', contextWindow: 32768 }
   ],
 };
 
@@ -394,8 +396,8 @@ async function discoverGoogleModels(apiKey: string): Promise<ModelInfo[]> {
     throw new Error('Google API key is required');
   }
 
-  console.log('[Model Discovery] Google: Fetching models from API...');
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`, {
+  console.log('[Model Discovery] Google: Fetching models from beta API...');
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`, {
     headers: {
       'Content-Type': 'application/json',
     },
@@ -408,28 +410,37 @@ async function discoverGoogleModels(apiKey: string): Promise<ModelInfo[]> {
   }
 
   const data = await response.json();
-  console.log('[Model Discovery] Google: Raw API response:', JSON.stringify(data).substring(0, 500));
+  console.log('[Model Discovery] Google: Raw API response:', JSON.stringify(data));
 
   if (!data.models || !Array.isArray(data.models)) {
-    console.error('[Model Discovery] Google: Unexpected API response format');
+    console.error('[Model Discovery] Google: Unexpected API response format', data);
     throw new Error('Unexpected API response format from Google');
   }
 
-  // Filter for only text models (exclude embedding models, vision-only models, etc.)
+  // Log all available models for debugging
+  console.log('[Model Discovery] Google: All available models:', 
+    data.models.map((m: any) => ({ 
+      name: m.name, 
+      displayName: m.displayName,
+      version: m.version,
+      inputTokenLimit: m.inputTokenLimit,
+      outputTokenLimit: m.outputTokenLimit
+    }))
+  );
+
+  // Filter for Gemini models
   const llmModels = data.models.filter((model: any) => {
     const name = model.name.toLowerCase();
-    // Include only the text LLMs (not vision, embeddings, etc.)
-    return (
-      name.includes('gemini') && 
-      !name.includes('embedding') && 
-      !name.endsWith('vision')
-    );
+    // Include all Gemini models except embeddings
+    return name.includes('gemini') && !name.includes('embedding');
   });
   
-  console.log(`[Model Discovery] Google: Found ${llmModels.length} text LLM models`);
+  console.log(`[Model Discovery] Google: Found ${llmModels.length} Gemini models:`, 
+    llmModels.map((m: any) => m.name)
+  );
   
   if (llmModels.length === 0) {
-    console.warn('[Model Discovery] Google: No text models found. Using fallback models.');
+    console.warn('[Model Discovery] Google: No Gemini models found. Using fallback models.');
     return FALLBACK_MODELS.google || [];
   }
 
@@ -438,8 +449,9 @@ async function discoverGoogleModels(apiKey: string): Promise<ModelInfo[]> {
     name: model.displayName || model.name,
     contextWindow: model.inputTokenLimit,
     maxTokens: model.outputTokenLimit,
+    version: model.version // Add version info for debugging
   }));
   
-  console.log(`[Model Discovery] Google: Successfully processed ${models.length} LLM models`);
+  console.log(`[Model Discovery] Google: Successfully processed ${models.length} Gemini models:`, models);
   return models;
 } 

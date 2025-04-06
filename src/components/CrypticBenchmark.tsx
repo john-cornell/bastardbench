@@ -3,6 +3,7 @@ import { LLMAdapter, TestResult, BenchmarkResult } from '../types/llm';
 import { CrypticTest } from '../types/cryptic';
 import { TestRunner } from '../benchmark/TestRunner';
 import { BenchmarkConfig, TestCategory } from '../types/llm';
+import { useConfig } from '../hooks/useConfig';
 
 interface CrypticBenchmarkProps {
   adapter: LLMAdapter;
@@ -14,6 +15,7 @@ export function CrypticBenchmark({ adapter, tests, iterations = 5 }: CrypticBenc
   const [isRunning, setIsRunning] = useState(false);
   const [results, setResults] = useState<BenchmarkResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { config } = useConfig();
 
   const handleRunBenchmark = async () => {
     setIsRunning(true);
@@ -86,29 +88,38 @@ export function CrypticBenchmark({ adapter, tests, iterations = 5 }: CrypticBenc
           <div className="mt-8">
             <h4 className="text-sm font-medium text-secondary-500 mb-4">Detailed Results</h4>
             <div className="space-y-4">
-              {results.results.map((result, index) => (
-                <div
-                  key={`${result.testCase.id}-${index}`}
-                  className="flex items-center justify-between p-4 bg-secondary-50 rounded-lg"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-secondary-900">{result.testCase.name}</p>
-                    <p className="text-sm text-secondary-500">{result.testCase.prompt}</p>
+              {results.results.map((result, index) => {
+                const crypticTest = result.testCase as CrypticTest;
+                return (
+                  <div
+                    key={`${result.testCase.id}-${index}`}
+                    className="flex flex-col p-4 bg-secondary-50 rounded-lg"
+                  >
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="text-sm font-medium text-secondary-900">{crypticTest.prompt}</p>
+                        <p className="text-sm text-secondary-500 mt-1">Length: {crypticTest.answerLength}</p>
+                        <p className="text-sm text-secondary-500 mt-1">Answer: {crypticTest.answer}</p>
+                      </div>
+                      <div className="flex items-center space-x-4">
+                        <span className="text-sm text-secondary-500">{result.duration}ms</span>
+                        <span
+                          className={`px-2 py-1 rounded-full text-xs font-medium ${
+                            result.passed
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-red-100 text-red-800'
+                          }`}
+                        >
+                          {result.passed ? 'Passed' : 'Failed'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-2">
+                      <p className="text-sm text-secondary-700">Model's response: {result.response}</p>
+                    </div>
                   </div>
-                  <div className="flex items-center space-x-4">
-                    <span className="text-sm text-secondary-500">{result.duration}ms</span>
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        result.passed
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}
-                    >
-                      {result.passed ? 'Passed' : 'Failed'}
-                    </span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
