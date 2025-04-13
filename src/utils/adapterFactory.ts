@@ -10,7 +10,7 @@ import { callGoogle } from './providers/google';
 export function createAdapter(adapterConfig: TestSuite['adapters'][0]): LLMAdapter {
   const { id, name, type, model, config } = adapterConfig;
 
-  const callMap = {
+  const callMap: Record<string, (prompt: string, model: string, config: Record<string, string>) => Promise<string>> = {
     openai: callOpenAI,
     anthropic: callAnthropic,
     azure: callAzure,

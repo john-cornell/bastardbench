@@ -302,5 +302,85 @@ export const crypticTests: CrypticTest[] = [
     answer: 'ticket',
     expectedResult: 'ticket',
     category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-38',
+    prompt: 'Exude mostly classified information (6)',
+    answerLength: '6',
+    answer: 'secret',
+    expectedResult: 'secret',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-39',
+    prompt: 'Fail to hit one on target (7)',
+    answerLength: '7',
+    answer: 'mission',
+    expectedResult: 'mission',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-40',
+    prompt: 'Examine its negative arrangement (11)',
+    answerLength: '11',
+    answer: 'investigate',
+    expectedResult: 'investigate',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-41',
+    prompt: 'Oriental queen ushers in celebration of death and renewal (6)',
+    answerLength: '6',
+    answer: 'easter',
+    expectedResult: 'easter',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-42',
+    prompt: 'Runs on batteries or transformers, first signs of an android (5)',
+    answerLength: '5',
+    answer: 'robot',
+    expectedResult: 'robot',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-43',
+    prompt: 'Nasty, gin addled, fool uttered clear purpose (10)',
+    answerLength: '10',
+    answer: 'meaningful',
+    expectedResult: 'meaningful',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-44',
+    prompt: 'Malfunctioning reset is abrupt (5)',
+    answerLength: '5',
+    answer: 'terse',
+    expectedResult: 'terse',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-45',
+    prompt: 'Given a year, alternative article developed into speculation (6)',
+    answerLength: '6',
+    answer: 'theory',
+    expectedResult: 'theory',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-46',
+    prompt: 'Treasury changes last of silver for eastern stimulant (6)',
+    answerLength: '6',
+    answer: 'coffee',
+    expectedResult: 'coffee',
+    category: TestCategory.CRYPTIC
+  },
+  {
+    id: 'cryptic-47',
+    prompt: 'Vault, I see, leads to mystery (7)',
+    answerLength: '7',
+    answer: 'cryptic',
+    expectedResult: 'cryptic',
+    category: TestCategory.CRYPTIC
   }
 ]; 

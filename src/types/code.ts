@@ -4,6 +4,7 @@ export interface CodeTest extends TestCase {
   prompt: string;
   expectedOutput: string;
   language: string;
+  answer: string;
 }
 
 export const codeTests: CodeTest[] = [
@@ -13,6 +14,7 @@ export const codeTests: CodeTest[] = [
     expectedOutput: 'function add(a, b) { return a + b; }',
     language: 'javascript',
     category: TestCategory.CODE,
-    expectedResult: 'function add(a, b) { return a + b; }'
+    expectedResult: 'function add(a, b) { return a + b; }',
+    answer: 'function add(a, b) { return a + b; }'
   }
 ]; 

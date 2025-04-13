@@ -27,15 +27,14 @@ const saveToStorage = (key: string, value: any) => {
 };
 
 export function useTestSuites() {
+  // Initialize state with data from localStorage
   const [testSuites, setTestSuites] = useState<TestSuite[]>(() => {
-    // Initialize state with data from localStorage
     const stored = localStorage.getItem(STORAGE_KEY);
     const parsed = safeJSONParse(stored, [DEFAULT_TEST_SUITE]);
     return Array.isArray(parsed) && parsed.length > 0 ? parsed : [DEFAULT_TEST_SUITE];
   });
 
   const [activeSuite, setActiveSuite] = useState<TestSuite | null>(() => {
-    // Initialize active suite from localStorage or use first suite
     const stored = localStorage.getItem(STORAGE_KEY);
     const parsed = safeJSONParse(stored, [DEFAULT_TEST_SUITE]);
     return Array.isArray(parsed) && parsed.length > 0 ? parsed[0] : DEFAULT_TEST_SUITE;
@@ -48,6 +47,16 @@ export function useTestSuites() {
       console.warn('Failed to save test suites to localStorage');
     }
   }, [testSuites]);
+
+  // Also save when active suite changes
+  useEffect(() => {
+    if (activeSuite) {
+      const success = saveToStorage(STORAGE_KEY, testSuites);
+      if (!success) {
+        console.warn('Failed to save test suites to localStorage');
+      }
+    }
+  }, [activeSuite, testSuites]);
 
   // Memoized update functions to ensure consistent behavior
   const createTestSuite = useCallback((name: string, description?: string) => {

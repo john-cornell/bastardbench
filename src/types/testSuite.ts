@@ -13,6 +13,9 @@ export interface TestSuite {
     model: string; // e.g., 'gpt-4', 'claude-3-opus', 'gemini-pro'
     config: Record<string, string>;
   }[];
+  settings: {
+    autoUpdateAdapterNames: boolean; // Controls whether adapter names are automatically updated with model names
+  };
   createdAt: string;
   updatedAt: string;
 }
@@ -24,6 +27,9 @@ export const DEFAULT_TEST_SUITE: TestSuite = {
   categories: Object.values(TestCategory),
   selectedTests: [],
   adapters: [],
+  settings: {
+    autoUpdateAdapterNames: true // Default to true to maintain current behavior
+  },
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
