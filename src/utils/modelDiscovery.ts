@@ -25,7 +25,7 @@ interface GoogleModelInfo extends ModelInfo {
   apiPath: string;
 }
 
-interface GoogleModelMetadata {
+export interface GoogleModelMetadata {
   name: string;
   version: 'v1' | 'v1beta';
 }
@@ -87,13 +87,14 @@ const GOOGLE_API_VERSIONS = [
       'gemini-2.0-pro-vision',
       'gemini-2.0-pro-latest',
       'gemini-2.0-pro-vision-latest',
+      'gemini-2.0-pro-exp',
       'chat-bison-001'
     ]
   }
 ] as const;
 
 // Update model metadata
-const GOOGLE_MODEL_METADATA: Record<string, GoogleModelMetadata> = {
+export const GOOGLE_MODEL_METADATA: Record<string, GoogleModelMetadata> = {
   'gemini-pro': { name: 'Gemini Pro', version: 'v1' },
   'gemini-pro-vision': { name: 'Gemini Pro Vision', version: 'v1' },
   'gemini-ultra': { name: 'Gemini Ultra', version: 'v1beta' },
@@ -101,6 +102,7 @@ const GOOGLE_MODEL_METADATA: Record<string, GoogleModelMetadata> = {
   'gemini-2.0-pro-vision': { name: 'Gemini 2.0 Pro Vision', version: 'v1' },
   'gemini-2.0-pro-latest': { name: 'Gemini 2.0 Pro (Latest)', version: 'v1' },
   'gemini-2.0-pro-vision-latest': { name: 'Gemini 2.0 Pro Vision (Latest)', version: 'v1' },
+  'gemini-2.0-pro-exp': { name: 'Gemini 2.0 Pro (Experimental)', version: 'v1beta' },
   'chat-bison': { name: 'PaLM 2 Chat', version: 'v1' },
   'chat-bison-001': { name: 'PaLM 2 Chat', version: 'v1beta' }
 };
@@ -451,13 +453,13 @@ const discoverGoogleModels = async (adapter: any): Promise<ModelInfo[]> => {
         id: 'models/gemini-pro',
         name: 'Gemini Pro',
         contextWindow: 32000,
-        apiPath: 'v1'
+        apiPath: 'v1/models/gemini-pro:generateContent'
       },
       {
         id: 'models/gemini-1.5-pro',
         name: 'Gemini 1.5 Pro',
         contextWindow: 128000,
-        apiPath: 'v1'
+        apiPath: 'v1/models/gemini-1.5-pro:generateContent'
       }
     ];
   }
@@ -511,17 +513,20 @@ const discoverGoogleModels = async (adapter: any): Promise<ModelInfo[]> => {
           const modelName = model.name.split('/').pop();
           const displayName = model.displayName || getDisplayName(modelName);
           
+          // Store the full API path used when discovered
+          const modelApiPath = `${versionConfig.path}/models/${modelName}:generateContent`;
+          
           return {
             id: `models/${modelName}`,
             name: displayName,
             contextWindow: model.inputTokenLimit || determineContextWindow(modelName),
-            apiPath: versionConfig.path
+            apiPath: modelApiPath
           };
         });
 
       if (models.length > 0) {
         console.log(`[Google API] Found ${models.length} models in ${versionConfig.path}:`, 
-          models.map((m: any) => m.name));
+          models.map((m: any) => `${m.name} (${m.apiPath})`));
         // Add models to our collection
         allModels = [...allModels, ...models];
       } else {
@@ -540,19 +545,43 @@ const discoverGoogleModels = async (adapter: any): Promise<ModelInfo[]> => {
         id: 'models/gemini-pro',
         name: 'Gemini Pro',
         contextWindow: 32000,
-        apiPath: 'v1'
+        apiPath: 'v1/models/gemini-pro:generateContent'
       },
       {
         id: 'models/gemini-1.5-pro',
         name: 'Gemini 1.5 Pro',
         contextWindow: 128000,
-        apiPath: 'v1'
+        apiPath: 'v1/models/gemini-1.5-pro:generateContent'
       }
     ];
   }
 
   // Remove duplicates based on model ID
-  const uniqueModels = Array.from(new Map(allModels.map(model => [model.id, model])).values());
+  // If model exists in both v1 and v1beta, prefer v1beta
+  const modelMap = new Map<string, ModelInfo>();
+  
+  // Add models to the map, with a priority system
+  allModels.forEach(model => {
+    const existingModel = modelMap.get(model.id);
+    
+    if (!existingModel) {
+      // Model not in map yet, add it
+      modelMap.set(model.id, model);
+    } else {
+      // Model already in map. For experimental versions, prefer v1beta
+      const isExperimental = model.id.includes('-exp') || 
+                           model.id.includes('-preview') ||
+                           model.id.includes('2.0') ||
+                           model.id.includes('2.5');
+                           
+      if (isExperimental && model.apiPath && model.apiPath.includes('v1beta')) {
+        // Replace existing model with this one since it's experimental and v1beta
+        modelMap.set(model.id, model);
+      }
+    }
+  });
+  
+  const uniqueModels = Array.from(modelMap.values());
   console.log(`[Google API] Total unique models discovered: ${uniqueModels.length}`);
   console.log('[Google API] Final model list:', uniqueModels.map(m => `${m.name} (${m.apiPath})`));
   

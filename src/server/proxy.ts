@@ -190,25 +190,54 @@ app.post('/api/google', (async (req: Request, res: Response) => {
     console.log('Google Proxy Request:', {
       model,
       apiPath,
-      promptLength: prompt.length
+      promptLength: prompt.length,
+      apiKeyLength: apiKey ? apiKey.length : 0
     });
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/${apiPath}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey
-      },
-      body: JSON.stringify({
-        contents: [{
-          parts: [{
-            text: prompt
-          }]
+    if (!apiPath) {
+      console.log('No API path provided for model:', model);
+      // We should not auto-generate an API path - log an error
+      return res.status(400).json({ 
+        error: `No API path provided for model ${model}. Discovery process should provide this.` 
+      });
+    }
+    
+    const effectiveApiPath = apiPath;
+    console.log(`Using API path from model discovery: ${effectiveApiPath}`);
+    
+    const googleApiUrl = `https://generativelanguage.googleapis.com/${effectiveApiPath}`;
+    console.log('Google API URL:', googleApiUrl);
+
+    // Construct request body
+    const requestBody = {
+      contents: [{
+        parts: [{
+          text: prompt
         }]
-      })
-    });
+      }]
+    };
+    
+    console.log('Google API Request Body:', JSON.stringify(requestBody));
 
-    console.log('Google API Response Status:', response.status);
+    // Make the request with additional error handling
+    let response;
+    try {
+      response = await fetch(googleApiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey
+        },
+        body: JSON.stringify(requestBody)
+      });
+    } catch (fetchError) {
+      console.error('Google API Fetch Error:', fetchError);
+      throw new Error(`Error connecting to Google API: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}`);
+    }
+
+    console.log('Google API Response Status:', response.status, response.statusText);
+    console.log('Google API Response Headers:', Object.fromEntries([...response.headers.entries()]));
+    
     const rawResponseText = await response.text();
     console.log('Google API Raw Response:', rawResponseText);
 
@@ -216,9 +245,48 @@ app.post('/api/google', (async (req: Request, res: Response) => {
       console.error('Google API Error Response:', {
         status: response.status,
         statusText: response.statusText,
-        body: rawResponseText
+        url: googleApiUrl,
+        model: model || 'not specified',
+        apiPath: effectiveApiPath,
+        body: rawResponseText || '(empty response body)',
+        headers: Object.fromEntries([...response.headers.entries()])
       });
-      throw new Error(`Google API error: ${response.status} ${response.statusText}`);
+      
+      // Attempt to parse error message from response
+      try {
+        if (rawResponseText && rawResponseText.trim()) {
+          const errorJson = JSON.parse(rawResponseText);
+          console.error('Parsed Google API Error JSON:', JSON.stringify(errorJson, null, 2));
+          
+          if (errorJson.error) {
+            console.error('Google API Detailed Error:', errorJson.error);
+            const errorMessage = errorJson.error.message || JSON.stringify(errorJson.error);
+            console.error(`Google API Error Message: ${errorMessage}`);
+            
+            // Provide guidance about API versions
+            if (response.status === 404 && errorMessage.includes('not found')) {
+              console.error(`MODEL NOT FOUND: The model ${model} was not found on ${effectiveApiPath}`);
+              if (effectiveApiPath.includes('v1/')) {
+                console.error('RECOMMENDATION: Try with the v1beta endpoint instead of v1');
+              } else if (effectiveApiPath.includes('v1beta/')) {
+                console.error('RECOMMENDATION: Try with the v1 endpoint instead of v1beta');
+              }
+            }
+            
+            return res.status(response.status).json({ 
+              error: `Google API error: ${response.status} ${response.statusText} - ${errorMessage}`
+            });
+          }
+        } else {
+          console.error('Google API returned empty error response body');
+        }
+      } catch (parseError) {
+        console.error('Failed to parse error JSON:', parseError, 'Raw response:', rawResponseText);
+      }
+      
+      return res.status(response.status).json({ 
+        error: `Google API error: ${response.status} ${response.statusText} - Check server logs for details`
+      });
     }
 
     let parsedResponse;

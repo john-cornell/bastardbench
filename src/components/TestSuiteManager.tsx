@@ -823,7 +823,9 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
         config: adapterConfig
       };
       
+      // Always use the model discovery function
       const models = await discoverAvailableModels([tempAdapter]);
+      
       const discoveredModels = models[type] || [];
       
       setDiscoveredModels(prev => ({
