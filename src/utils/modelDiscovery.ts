@@ -1,6 +1,6 @@
 import { TestSuite } from '../types/testSuite';
 
-interface ModelInfo {
+export interface ModelInfo {
   id: string;
   name: string;
   contextWindow?: number;
@@ -12,13 +12,16 @@ interface ModelInfo {
   apiPath?: string;
 }
 
-interface ProviderModels {
+export interface ProviderModels {
   openai?: ModelInfo[];
   anthropic?: ModelInfo[];
   azure?: ModelInfo[];
   bedrock?: ModelInfo[];
   ollama?: ModelInfo[];
   google?: ModelInfo[];
+  mistral?: ModelInfo[];
+  groq?: ModelInfo[];
+  deepseek?: ModelInfo[];
 }
 
 interface GoogleModelInfo extends ModelInfo {
@@ -31,35 +34,57 @@ export interface GoogleModelMetadata {
 }
 
 // Fallback models in case API calls fail
-const FALLBACK_MODELS: ProviderModels = {
+const FALLBACK_MODELS: Record<string, ModelInfo[]> = {
   openai: [
-    { id: 'gpt-4-turbo-preview', name: 'GPT-4 Turbo', contextWindow: 128000 },
+    { id: 'gpt-4o', name: 'GPT-4o', contextWindow: 128000 },
+    { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', contextWindow: 128000 },
     { id: 'gpt-4', name: 'GPT-4', contextWindow: 8192 },
     { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', contextWindow: 16385 },
   ],
   anthropic: [
     { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', contextWindow: 200000 },
     { id: 'claude-3-sonnet-20240229', name: 'Claude 3 Sonnet', contextWindow: 200000 },
-    { id: 'claude-2.1', name: 'Claude 2.1', contextWindow: 200000 },
+    { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku', contextWindow: 200000 },
+    { id: 'claude-2.1', name: 'Claude 2.1', contextWindow: 100000 },
   ],
   azure: [
     { id: 'gpt-4', name: 'GPT-4', contextWindow: 8192 },
-    { id: 'gpt-35-turbo', name: 'GPT-3.5 Turbo', contextWindow: 16385 },
+    { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', contextWindow: 16385 },
   ],
   bedrock: [
     { id: 'anthropic.claude-3-opus-20240229-v1:0', name: 'Claude 3 Opus', contextWindow: 200000 },
     { id: 'anthropic.claude-3-sonnet-20240229-v1:0', name: 'Claude 3 Sonnet', contextWindow: 200000 },
+    { id: 'anthropic.claude-3-haiku-20240307-v1:0', name: 'Claude 3 Haiku', contextWindow: 200000 },
+    { id: 'anthropic.claude-v2:1', name: 'Claude 2.1', contextWindow: 100000 },
+    { id: 'anthropic.claude-v2', name: 'Claude 2', contextWindow: 100000 },
+    { id: 'anthropic.claude-instant-v1', name: 'Claude Instant', contextWindow: 100000 },
+    { id: 'meta.llama2-70b-chat-v1', name: 'Llama 2 70B Chat', contextWindow: 4096 },
+    { id: 'meta.llama2-13b-chat-v1', name: 'Llama 2 13B Chat', contextWindow: 4096 },
+    { id: 'meta.llama2-7b-chat-v1', name: 'Llama 2 7B Chat', contextWindow: 4096 },
   ],
   ollama: [
     { id: 'llama2', name: 'Llama 2', contextWindow: 4096 },
     { id: 'mistral', name: 'Mistral', contextWindow: 8192 },
-    { id: 'codellama', name: 'Code Llama', contextWindow: 8192 },
+    { id: 'codellama', name: 'Code Llama', contextWindow: 4096 },
+    { id: 'neural-chat', name: 'Neural Chat', contextWindow: 4096 },
   ],
   google: [
-    { id: 'gemini-pro', name: 'Gemini Pro', contextWindow: 32768 },
-    { id: 'gemini-pro-vision', name: 'Gemini Pro Vision', contextWindow: 32768 },
-    { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', contextWindow: 32768 },
-    { id: 'gemini-2.0-pro', name: 'Gemini 2.0 Pro', contextWindow: 32768 }
+    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', contextWindow: 1000000 },
+    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', contextWindow: 1000000 },
+    { id: 'gemini-1.0-pro', name: 'Gemini 1.0 Pro', contextWindow: 32768 },
+  ],
+  mistral: [
+    { id: 'mistral-large', name: 'Mistral Large', contextWindow: 32000 },
+    { id: 'mistral-medium', name: 'Mistral Medium', contextWindow: 32000 },
+    { id: 'mistral-small', name: 'Mistral Small', contextWindow: 32000 },
+  ],
+  groq: [
+    { id: 'mixtral-8x7b-32768', name: 'Mixtral 8x7B', contextWindow: 32768 },
+    { id: 'llama2-70b-4096', name: 'Llama 2 70B', contextWindow: 4096 },
+  ],
+  deepseek: [
+    { id: 'deepseek-chat', name: 'DeepSeek Chat', contextWindow: 128000 },
+    { id: 'deepseek-coder', name: 'DeepSeek Coder', contextWindow: 128000 },
   ],
 };
 
@@ -88,7 +113,11 @@ const GOOGLE_API_VERSIONS = [
       'gemini-2.0-pro-latest',
       'gemini-2.0-pro-vision-latest',
       'gemini-2.0-pro-exp',
-      'chat-bison-001'
+      'chat-bison-001',
+      'gemma-3-27b-it',
+      'gemma-3-12b-it',
+      'gemma-3',
+      'gemma-2'
     ]
   }
 ] as const;
@@ -104,7 +133,11 @@ export const GOOGLE_MODEL_METADATA: Record<string, GoogleModelMetadata> = {
   'gemini-2.0-pro-vision-latest': { name: 'Gemini 2.0 Pro Vision (Latest)', version: 'v1' },
   'gemini-2.0-pro-exp': { name: 'Gemini 2.0 Pro (Experimental)', version: 'v1beta' },
   'chat-bison': { name: 'PaLM 2 Chat', version: 'v1' },
-  'chat-bison-001': { name: 'PaLM 2 Chat', version: 'v1beta' }
+  'chat-bison-001': { name: 'PaLM 2 Chat', version: 'v1beta' },
+  'gemma-3-12b-it': { name: 'Gemma 3 12B', version: 'v1beta' },
+  'gemma-3-27b-it': { name: 'Gemma 3 27B', version: 'v1beta' },
+  'gemma-3': { name: 'Gemma 3', version: 'v1beta' },
+  'gemma-2': { name: 'Gemma 2', version: 'v1beta' }
 };
 
 export async function discoverAvailableModels(adapters: TestSuite['adapters']): Promise<ProviderModels> {
@@ -239,50 +272,59 @@ async function discoverAnthropicModels(apiKey: string): Promise<ModelInfo[]> {
     throw new Error('Anthropic API key is required');
   }
 
-  console.log('[Model Discovery] Anthropic: Fetching models from API...');
-  const response = await fetch('https://api.anthropic.com/v1/models', {
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-  });
+  console.log('[Model Discovery] Anthropic: Using proxy for model discovery...');
+  try {
+    // Use the proxy server for model discovery to avoid CORS issues
+    const proxyUrl = 'http://localhost:3001/api/anthropic-models';
+    
+    const response = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ apiKey })
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`[Model Discovery] Anthropic: API error: ${response.status} ${response.statusText}\n${errorText}`);
-    throw new Error(`Anthropic API error: ${response.status} ${response.statusText}`);
-  }
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Model Discovery] Anthropic: Proxy error: ${response.status} ${response.statusText}\n${errorText}`);
+      console.log('[Model Discovery] Anthropic: Falling back to default models');
+      return FALLBACK_MODELS.anthropic || [];
+    }
 
-  const data = await response.json();
-  console.log('[Model Discovery] Anthropic: Raw API response:', JSON.stringify(data).substring(0, 500));
+    const data = await response.json();
+    
+    if (!data.models || !Array.isArray(data.models)) {
+      console.error('[Model Discovery] Anthropic: Unexpected API response format');
+      return FALLBACK_MODELS.anthropic || [];
+    }
 
-  if (!data.models || !Array.isArray(data.models)) {
-    console.error('[Model Discovery] Anthropic: Unexpected API response format');
-    throw new Error('Unexpected API response format from Anthropic');
-  }
+    // Filter for only LLM chat models
+    const llmModels = data.models.filter((model: any) => {
+      const id = model.id.toLowerCase();
+      return id.includes('claude') && !id.includes('instant');
+    });
+    
+    console.log(`[Model Discovery] Anthropic: Found ${llmModels.length} Claude models`);
+    
+    if (llmModels.length === 0) {
+      console.warn('[Model Discovery] Anthropic: No Claude models found. Using fallback models.');
+      return FALLBACK_MODELS.anthropic || [];
+    }
 
-  // Filter for only LLM chat models
-  const llmModels = data.models.filter((model: any) => {
-    const id = model.id.toLowerCase();
-    return id.includes('claude') && !id.includes('instant');
-  });
-  
-  console.log(`[Model Discovery] Anthropic: Found ${llmModels.length} Claude models`);
-  
-  if (llmModels.length === 0) {
-    console.warn('[Model Discovery] Anthropic: No Claude models found. Using fallback models.');
+    const models = llmModels.map((model: any) => ({
+      id: model.id,
+      name: model.name || model.id,
+      contextWindow: model.context_window,
+      maxTokens: model.max_tokens,
+    }));
+    
+    console.log(`[Model Discovery] Anthropic: Successfully fetched ${models.length} models`);
+    return models;
+  } catch (error) {
+    console.error('[Model Discovery] Anthropic: Error during discovery:', error);
     return FALLBACK_MODELS.anthropic || [];
   }
-
-  const models = llmModels.map((model: any) => ({
-    id: model.id,
-    name: model.name || model.id,
-    contextWindow: model.context_window,
-    maxTokens: model.max_tokens,
-  }));
-  
-  console.log(`[Model Discovery] Anthropic: Successfully fetched ${models.length} models`);
-  return models;
 }
 
 async function discoverAzureModels(apiKey: string, endpoint: string): Promise<ModelInfo[]> {
@@ -602,10 +644,19 @@ function determineContextWindow(modelName: string): number {
   if (modelName.includes('gemini-1.0')) return 32000;
   if (modelName.includes('gemini-1.5')) return 128000;
   if (modelName.includes('gemini-2')) return 128000;
-  if (modelName.includes('gemma-3')) {
-    if (modelName.includes('27b')) return 128000;
-    if (modelName.includes('12b')) return 128000;
-    return 64000; // For smaller Gemma models
+  
+  // Improved Gemma detection with more specific model handling
+  if (modelName.includes('gemma')) {
+    if (modelName.includes('gemma-3')) {
+      if (modelName.includes('27b')) return 128000;
+      if (modelName.includes('12b')) return 128000;
+      return 64000; // For smaller Gemma 3 models
+    }
+    if (modelName.includes('gemma-2')) {
+      return 128000; // Gemma 2 models
+    }
+    return 32000; // Other Gemma models
   }
+  
   return 32000; // Default fallback
 } 

@@ -1,56 +1,46 @@
 import { LLMAdapter } from '../types/llm';
 import { TestSuite } from '../types/testSuite';
-import { callOpenAI } from './providers/openai';
-import { callAnthropic } from './providers/anthropic';
-import { callAzure } from './providers/azure';
-import { callBedrock } from './providers/bedrock';
-import { callOllama } from './providers/ollama';
-import { callGoogle } from './providers/google';
+import { OpenAIAdapter } from '../adapters/openai';
+import { AnthropicAdapter } from '../adapters/anthropic';
+import { AzureAdapter } from '../adapters/azure';
+import { BedrockAdapter } from '../adapters/bedrock';
+import { OllamaAdapter } from '../adapters/ollama';
 import { GoogleAdapter } from '../adapters/google';
+import { MistralAdapter } from '../adapters/mistral';
+import { GroqAdapter } from '../adapters/groq';
+import { DeepSeekAdapter } from '../adapters/deepseek';
 
-export function createAdapter(adapterConfig: TestSuite['adapters'][0]): LLMAdapter {
-  const { id, name, type, model, config } = adapterConfig;
-
-  const callMap: Record<string, (prompt: string, model: string, config: Record<string, string>) => Promise<string>> = {
-    openai: callOpenAI,
-    anthropic: callAnthropic,
-    azure: callAzure,
-    bedrock: callBedrock,
-    ollama: callOllama,
-    google: callGoogle
-  };
-
-  const provider = type;
-  const call = async (prompt: string): Promise<string> => {
-    const callFn = callMap[type];
-    if (!callFn) {
-      throw new Error(`Unsupported provider type: ${type}`);
-    }
-    return callFn(prompt, model, config);
-  };
-
-  // For Google adapter, use the class-based implementation
-  if (type === 'google') {
-    // Get the discovered API path from the model discovery process
-    console.log(`Creating Google adapter for model ${model} with config:`, config);
-    
-    // The apiPath from discovery should be the complete path used when discovered 
-    const discoveredApiPath = config.apiPath;
-    console.log(`Model has discovered API path: ${discoveredApiPath || 'none'}`);
-    
-    const googleAdapter = new GoogleAdapter(config.apiKey, model, discoveredApiPath);
-    return {
-      id,
-      name,
-      provider: type,
-      call: (prompt: string) => googleAdapter.call(prompt)
-    };
+export const createAdapter = (adapter: TestSuite['adapters'][0]): LLMAdapter => {
+  switch (adapter.type) {
+    case 'openai':
+      return new OpenAIAdapter(adapter.config.apiKey, adapter.model);
+    case 'anthropic':
+      return new AnthropicAdapter(adapter.config.apiKey, adapter.model);
+    case 'azure':
+      return new AzureAdapter(adapter.config.apiKey, adapter.config.endpoint, adapter.model);
+    case 'bedrock':
+      return new BedrockAdapter(
+        adapter.config.accessKey,
+        adapter.config.secretKey,
+        adapter.config.region,
+        adapter.model
+      );
+    case 'ollama':
+      return new OllamaAdapter(adapter.config.endpoint, adapter.model);
+    case 'google':
+      return new GoogleAdapter(
+        adapter.config.apiKey,
+        adapter.model,
+        adapter.config.apiPath,
+        adapter.config.apiVersion
+      );
+    case 'mistral':
+      return new MistralAdapter(adapter.config.apiKey, adapter.model);
+    case 'groq':
+      return new GroqAdapter(adapter.config.apiKey, adapter.model);
+    case 'deepseek':
+      return new DeepSeekAdapter(adapter.config.apiKey, adapter.model);
+    default:
+      throw new Error(`Unsupported adapter type: ${adapter.type}`);
   }
-
-  return {
-    id,
-    name,
-    provider,
-    call
-  };
-} 
+}; 

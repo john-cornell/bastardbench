@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useTestSuites } from '../hooks/useTestSuites';
-import { TestCategory, LLMAdapter } from '../types/llm';
+import { TestCategory } from '../types/llm';
 import { TestSuite, AVAILABLE_MODELS } from '../types/testSuite';
 import { discoverAvailableModels } from '../utils/modelDiscovery';
 import { loadConfig } from '../utils/storage';
 import { v4 as uuidv4 } from 'uuid';
-import { crypticTests, CrypticTest } from '../types/cryptic';
-import { codeTests, CodeTest } from '../types/code';
+import { crypticTests } from '../types/cryptic';
+import { codeTests } from '../types/code';
 import { createAdapter } from '../utils/adapterFactory';
-import { CRYPTIC_SYSTEM_PROMPT, CODE_SYSTEM_PROMPT } from '../utils/systemPrompts';
+import { CRYPTIC_SYSTEM_PROMPT } from '../utils/systemPrompts';
+import { saveTestResults, StoredTestResult } from '../utils/testResultsStorage';
 import {
   BarChart,
   Bar,
@@ -18,12 +19,11 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  LineChart,
-  Line,
   PieChart,
   Pie,
   Cell
 } from 'recharts';
+import { ProviderType, ProviderModels, ModelInfo } from '../utils/modelDiscovery';
 
 const stripMarkdown = (text: string) => {
   return text.replace(/```[a-z]*\n/g, '').replace(/```/g, '');
@@ -332,18 +332,22 @@ const ResultCharts = ({ testResults }: { testResults: Record<string, any> }) => 
         <h5 className="text-sm font-medium text-gray-700 mb-2">Average Response Time</h5>
         <div className="h-48">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={responseTimeData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis />
+            <PieChart>
+              <Pie
+                data={responseTimeData}
+                dataKey="avgResponseTime"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                outerRadius={60}
+                label={({ name, value }) => `${name}: ${value.toFixed(0)}ms`}
+              >
+                {responseTimeData.map((entry, index) => (
+                  <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                ))}
+              </Pie>
               <Tooltip formatter={(value: any) => `${Number(value).toFixed(0)}ms`} />
-              <Line 
-                type="monotone" 
-                dataKey="avgResponseTime" 
-                stroke={CHART_COLORS[0]} 
-                name="Response Time"
-              />
-            </LineChart>
+            </PieChart>
           </ResponsiveContainer>
         </div>
       </div>
@@ -469,19 +473,21 @@ interface TestResult {
       error?: string;
       duration: number;
       passed: boolean;
+      retryCount?: number;
     }>;
     overallScore: number;
   }>;
 }
 
 // Update the TestOutput component to handle JSON responses
-const TestOutput = ({ testName, prompt, response, error, duration, passed }: {
+const TestOutput = ({ testName, prompt, response, error, duration, passed, retryCount }: {
   testName: string;
   prompt: string;
   response?: any;
   error?: string;
   duration: number;
   passed: boolean;
+  retryCount?: number;
 }) => {
   // Format the response for display
   const formatResponse = (response: any) => {
@@ -499,11 +505,18 @@ const TestOutput = ({ testName, prompt, response, error, duration, passed }: {
     <div className="p-4 border border-gray-200 rounded-lg mb-4">
       <div className="flex justify-between items-start mb-2">
         <h5 className="font-medium text-gray-900">{testName}</h5>
-        <span className={`px-2 py-1 rounded text-sm ${
-          passed ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-        }`}>
-          {passed ? 'Passed' : 'Failed'} ({duration}ms)
-        </span>
+        <div className="flex flex-col items-end">
+          <span className={`px-2 py-1 rounded text-sm ${
+            passed ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+          }`}>
+            {passed ? 'Passed' : 'Failed'} ({duration}ms)
+          </span>
+          {retryCount && retryCount > 0 && (
+            <span className="text-xs text-gray-500 mt-1">
+              After {retryCount} {retryCount === 1 ? 'retry' : 'retries'}
+            </span>
+          )}
+        </div>
       </div>
       <div className="space-y-4">
         <div>
@@ -606,6 +619,8 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
     addAdapter,
     removeAdapter,
     updateAdapter,
+    exportTestSuites,
+    importTestSuites
   } = useTestSuites();
 
   const [config, setConfig] = useState(() => loadConfig());
@@ -622,6 +637,7 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
   const [adapterTestStatus, setAdapterTestStatus] = useState<Record<string, AdapterTestStatus>>({});
   const [discoveredModelsCache, setDiscoveredModelsCache] = useState<Record<string, any[]>>({});
   const [activeTab, setActiveTab] = useState<'manage' | 'run'>('manage');
+  const [selectedHistoryResult, setSelectedHistoryResult] = useState<StoredTestResult | null>(null);
   
   // Run Tests state
   const [iterations, setIterations] = useState(1);
@@ -633,6 +649,30 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
   const [isTestsStopped, setIsTestsStopped] = useState(false);
   const [activeRequestIds, setActiveRequestIds] = useState<Set<string>>(new Set());
   const [isTestRunning, setIsTestRunning] = useState(false); // Track if a test is actively running
+  const [importMode, setImportMode] = useState<'replace' | 'merge'>('merge');
+  const [showImportOptions, setShowImportOptions] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const exportDropdownRef = useRef<HTMLDivElement>(null);
+  
+  // Add effect to handle clicks outside dropdown
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (exportDropdownRef.current && !exportDropdownRef.current.contains(event.target as Node)) {
+        const dropdown = document.getElementById('export-options-dropdown');
+        if (dropdown && !dropdown.classList.contains('hidden')) {
+          dropdown.classList.add('hidden');
+        }
+      }
+    }
+    
+    // Add event listener
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    // Clean up
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   // Add effect to trigger model discovery when adapter type changes
   useEffect(() => {
@@ -725,6 +765,15 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
         break;
       case 'google':
         adapterConfig.apiKey = config.googleKey || '';
+        break;
+      case 'mistral':
+        adapterConfig.apiKey = newAdapterConfig.apiKey || '';
+        break;
+      case 'groq':
+        adapterConfig.apiKey = newAdapterConfig.apiKey || '';
+        break;
+      case 'deepseek':
+        adapterConfig.apiKey = newAdapterConfig.apiKey || '';
         break;
     }
     
@@ -988,30 +1037,102 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
       };
       
       // Run a single test and respect cancellation
-      const runSingleTest = async (adapter: any, category: string, test: Test) => {
+      const runSingleTest = async (adapter: any, category: string, test: { name: string; prompt: string; answer: string }) => {
         if (!isTestRunActive()) {
           console.log('Test run cancelled, skipping test');
           return null;
         }
         
         let passed = false;
-        try {
-          setIsTestRunning(true);
-          const llmAdapter = createAdapter(adapter);
-          const startTime = Date.now();
-          
-          // Generate a unique ID for this request
-          const requestId = `${adapter.id}-${category}-${test.name}-${Date.now()}`;
-          trackRequest(requestId);
-          console.log(`Starting test request ${requestId}`);
-          
-          let response;
+        let retryCount = 0;
+        const maxRetries = 5;
+        
+        const executeTest = async (): Promise<any> => {
           try {
-            response = await llmAdapter.call(CRYPTIC_SYSTEM_PROMPT + test.prompt);
+            setIsTestRunning(true);
+            const llmAdapter = createAdapter(adapter);
+            const startTime = Date.now();
             
-            // Add detailed logging for Google adapter
-            if (adapter.type === 'google') {
-              console.log('Google Adapter Raw Response:', response);
+            // Generate a unique ID for this request
+            const requestId = `${adapter.id}-${category}-${test.name}-${Date.now()}`;
+            trackRequest(requestId);
+            console.log(`Starting test request ${requestId}${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);
+            
+            let response;
+            try {
+              response = await llmAdapter.call(CRYPTIC_SYSTEM_PROMPT + test.prompt);
+              
+              // Add detailed logging for Google adapter
+              if (adapter.type === 'google') {
+                console.log('Google Adapter Raw Response:', response);
+                try {
+                  const parsedGoogleResponse = typeof response === 'string' ? JSON.parse(response) : response;
+                  const googleAnswer = (parsedGoogleResponse as unknown as GoogleResponse).answer?.toLowerCase().trim();
+                  passed = googleAnswer === test.answer.toLowerCase().trim();
+                  console.log('Google adapter comparison:', {
+                    modelAnswer: googleAnswer,
+                    expectedAnswer: test.answer.toLowerCase().trim(),
+                    passed
+                  });
+                } catch (parseError) {
+                  console.error('Error parsing Google response:', parseError);
+                  passed = false;
+                }
+              }
+              
+              // Check if test run was cancelled while this request was in flight
+              if (!isTestRunActive()) {
+                console.log(`Ignoring response from request ${requestId} as tests were stopped`);
+                untrackRequest(requestId);
+                setIsTestRunning(false);
+                return null;
+              }
+            } catch (llmError) {
+              untrackRequest(requestId);
+              setIsTestRunning(false);
+              
+              if (!isTestRunActive()) {
+                console.log('LLM call was cancelled due to test stopping');
+                return null;
+              }
+              
+              // Check if error is a 500 status that should be retried
+              const is500Error = llmError instanceof Error && 
+                (llmError.toString().includes('500') || 
+                 llmError.toString().includes('Internal Server Error') ||
+                 (llmError as any)?.status === 500);
+              
+              if (is500Error && retryCount < maxRetries) {
+                retryCount++;
+                const backoffTime = Math.min(1000 * Math.pow(2, retryCount), 30000); // Exponential backoff, max 30 seconds
+                console.log(`500 error detected, retrying ${retryCount}/${maxRetries} after ${backoffTime}ms: ${llmError.message}`);
+                await new Promise(resolve => setTimeout(resolve, backoffTime));
+                return executeTest(); // Retry the test
+              }
+              
+              throw llmError; // Re-throw if not a 500 error or max retries exceeded
+            }
+            
+            const duration = Date.now() - startTime;
+            untrackRequest(requestId);
+            console.log(`Completed test request ${requestId}`);
+            
+            // Check again if the test run was cancelled
+            if (!isTestRunActive()) {
+              console.log('Tests stopped after LLM call completed');
+              setIsTestRunning(false);
+              return null;
+            }
+            
+            // Parse Ollama response if it's an Ollama adapter
+            let parsedResponse = response;
+            if (adapter.type === 'ollama') {
+              const { parsedResponse: ollamaParsedResponse, modelAnswer } = parseOllamaResponse(response);
+              parsedResponse = ollamaParsedResponse;
+              passed = modelAnswer ? modelAnswer === test.answer.toLowerCase().trim() : false;
+              console.log('Comparing answers:', { modelAnswer, expectedAnswer: test.answer.toLowerCase().trim(), passed });
+            } else if (adapter.type === 'google') {
+              // Handle Google adapter response
               try {
                 const parsedGoogleResponse = typeof response === 'string' ? JSON.parse(response) : response;
                 const googleAnswer = (parsedGoogleResponse as unknown as GoogleResponse).answer?.toLowerCase().trim();
@@ -1027,77 +1148,30 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
               }
             }
             
-            // Check if test run was cancelled while this request was in flight
-            if (!isTestRunActive()) {
-              console.log(`Ignoring response from request ${requestId} as tests were stopped`);
-              untrackRequest(requestId);
-              setIsTestRunning(false);
-              return null;
-            }
-          } catch (llmError) {
-            untrackRequest(requestId);
             setIsTestRunning(false);
-            if (!isTestRunActive()) {
-              console.log('LLM call was cancelled due to test stopping');
-              return null;
-            }
-            throw llmError; // Re-throw if not a stop-related error
-          }
-          
-          const duration = Date.now() - startTime;
-          untrackRequest(requestId);
-          console.log(`Completed test request ${requestId}`);
-          
-          // Check again if the test run was cancelled
-          if (!isTestRunActive()) {
-            console.log('Tests stopped after LLM call completed');
+            return {
+              testName: test.name,
+              prompt: test.prompt,
+              response: parsedResponse,
+              duration,
+              passed,
+              retryCount: retryCount // Include retry information in result
+            };
+          } catch (error) {
+            console.error(`Error running test ${test.name} for adapter ${adapter.name}:`, error);
             setIsTestRunning(false);
-            return null;
+            return {
+              testName: test.name,
+              prompt: test.prompt,
+              error: error instanceof Error ? error.message : 'Unknown error',
+              duration: 0,
+              passed: false,
+              retryCount: retryCount // Include retry information in result
+            };
           }
-          
-          // Parse Ollama response if it's an Ollama adapter
-          let parsedResponse = response;
-          if (adapter.type === 'ollama') {
-            const { parsedResponse: ollamaParsedResponse, modelAnswer } = parseOllamaResponse(response);
-            parsedResponse = ollamaParsedResponse;
-            passed = modelAnswer ? modelAnswer === test.answer.toLowerCase().trim() : false;
-            console.log('Comparing answers:', { modelAnswer, expectedAnswer: test.answer.toLowerCase().trim(), passed });
-          } else if (adapter.type === 'google') {
-            // Handle Google adapter response
-            try {
-              const parsedGoogleResponse = typeof response === 'string' ? JSON.parse(response) : response;
-              const googleAnswer = (parsedGoogleResponse as unknown as GoogleResponse).answer?.toLowerCase().trim();
-              passed = googleAnswer === test.answer.toLowerCase().trim();
-              console.log('Google adapter comparison:', {
-                modelAnswer: googleAnswer,
-                expectedAnswer: test.answer.toLowerCase().trim(),
-                passed
-              });
-            } catch (parseError) {
-              console.error('Error parsing Google response:', parseError);
-              passed = false;
-            }
-          }
-          
-          setIsTestRunning(false);
-          return {
-            testName: test.name,
-            prompt: test.prompt,
-            response: parsedResponse,
-            duration,
-            passed
-          };
-        } catch (error) {
-          console.error(`Error running test ${test.name} for adapter ${adapter.name}:`, error);
-          setIsTestRunning(false);
-          return {
-            testName: test.name,
-            prompt: test.prompt,
-            error: error instanceof Error ? error.message : 'Unknown error',
-            duration: 0,
-            passed: false
-          };
-        }
+        };
+        
+        return executeTest();
       };
       
       // Process each adapter
@@ -1163,6 +1237,15 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
           setTestResults({ ...results });
         }
       }
+      
+      // After all tests are complete, save the results
+      if (Object.keys(results).length > 0) {
+        const success = saveTestResults(selectedSuiteId, suite.name, results);
+        if (!success) {
+          console.warn('Failed to save test results to storage');
+        }
+      }
+      
     } catch (error) {
       console.error('Error running tests:', error);
     } finally {
@@ -1313,20 +1396,217 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
     });
   };
 
+  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const fileContent = event.target?.result as string;
+      if (fileContent) {
+        const result = importTestSuites(fileContent, importMode);
+        if (result.success) {
+          alert(`Successfully imported ${result.importedCount} test suites`);
+          setShowImportOptions(false);
+        } else {
+          alert(`Error importing test suites: ${result.error}`);
+        }
+      }
+    };
+    reader.readAsText(file);
+    
+    // Reset the file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const triggerFileInput = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  // Add function to export test results
+  const exportTestResults = (format: 'json' | 'csv' = 'json') => {
+    if (Object.keys(testResults).length === 0) {
+      alert('No test results to export');
+      return;
+    }
+    
+    try {
+      if (format === 'json') {
+        // Create formatted test results object with metadata
+        const suite = testSuites.find(s => s.id === selectedSuiteId);
+        const resultsToExport = {
+          metadata: {
+            exportedAt: new Date().toISOString(),
+            suiteName: suite?.name || 'Unknown Suite',
+            suiteId: selectedSuiteId,
+            totalAdapters: Object.keys(testResults).length
+          },
+          results: testResults
+        };
+        
+        // Create a JSON string with proper formatting
+        const resultsJson = JSON.stringify(resultsToExport, null, 2);
+        
+        // Create a blob and download link
+        const blob = new Blob([resultsJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        
+        // Create a temporary download link
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `bastardbench-results-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        
+        // Clean up
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 100);
+      } else if (format === 'csv') {
+        // Create CSV content
+        const csvRows = [];
+        
+        // Add CSV header
+        csvRows.push(['Adapter Name', 'Model', 'Type', 'Category', 'Test Name', 'Passed', 'Duration (ms)', 'Retries', 'Error'].join(','));
+        
+        // Add data rows
+        Object.entries(testResults).forEach(([_, adapterResult]) => {
+          const adapterName = adapterResult.name;
+          const model = adapterResult.model;
+          const type = adapterResult.type;
+          
+          adapterResult.results.forEach((categoryResult) => {
+            const category = categoryResult.category;
+            
+            categoryResult.tests.forEach((test) => {
+              const row = [
+                `"${adapterName.replace(/"/g, '""')}"`, // Escape quotes in CSV
+                `"${model.replace(/"/g, '""')}"`,
+                `"${type.replace(/"/g, '""')}"`,
+                `"${category.replace(/"/g, '""')}"`,
+                `"${test.testName.replace(/"/g, '""')}"`,
+                test.passed ? 'true' : 'false',
+                test.duration,
+                test.retryCount || 0,
+                test.error ? `"${test.error.replace(/"/g, '""')}"` : ''
+              ];
+              
+              csvRows.push(row.join(','));
+            });
+          });
+        });
+        
+        // Convert CSV array to string
+        const csvContent = csvRows.join('\n');
+        
+        // Create blob and download
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        
+        // Create a temporary download link
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `bastardbench-results-${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        
+        // Clean up
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 100);
+      }
+    } catch (error) {
+      console.error('Error exporting test results:', error);
+      alert('Failed to export test results');
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center sticky top-0 bg-white z-10">
           <h2 className="text-xl font-semibold text-gray-900">Test Suite Manager</h2>
-          <button
-            onClick={onClose}
-            className="p-2 text-gray-400 hover:text-gray-500"
-          >
-            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <div className="flex space-x-2">
+            <button
+              onClick={() => setShowImportOptions(true)}
+              className="px-3 py-1 bg-gray-100 text-gray-800 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              Import
+            </button>
+            <button
+              onClick={exportTestSuites}
+              className="px-3 py-1 bg-gray-100 text-gray-800 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              Export
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 text-gray-400 hover:text-gray-500"
+            >
+              <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
+
+        {/* Import Dialog */}
+        {showImportOptions && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+              <h3 className="text-lg font-semibold mb-4">Import Test Suites</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Import Mode
+                  </label>
+                  <select
+                    value={importMode}
+                    onChange={(e) => setImportMode(e.target.value as 'replace' | 'merge')}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  >
+                    <option value="merge">Merge with existing suites</option>
+                    <option value="replace">Replace all existing suites</option>
+                  </select>
+                </div>
+                <div className="pt-2">
+                  <p className="text-sm text-gray-600 mb-4">
+                    {importMode === 'merge' 
+                      ? 'New test suites will be added to your existing suites. Suites with the same ID will not be duplicated.'
+                      : 'All existing test suites will be replaced with the imported ones.'}
+                  </p>
+                </div>
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => setShowImportOptions(false)}
+                    className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={triggerFileInput}
+                    className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                  >
+                    Select File
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".json"
+                    onChange={handleFileImport}
+                    className="hidden"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Tab Navigation */}
         <div className="border-b border-gray-200">
@@ -1582,6 +1862,9 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
                               <option value="bedrock">AWS Bedrock</option>
                               <option value="ollama">Ollama</option>
                               <option value="google">Google</option>
+                              <option value="mistral">Mistral</option>
+                              <option value="groq">Groq</option>
+                              <option value="deepseek">DeepSeek</option>
                             </select>
                           </div>
 
@@ -1612,12 +1895,12 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
                               disabled={!newAdapterType}
                             >
                               <option value="">Select a model</option>
-                              {discoveredModels[newAdapterType]?.map((model: any) => (
-                                <option 
-                                  key={typeof model === 'string' ? model : model.id || model.name} 
-                                  value={typeof model === 'string' ? model : model.id || model.name}
+                              {discoveredModels[newAdapterType]?.map((model: ModelInfo) => (
+                                <option
+                                  key={model.id || model.name}
+                                  value={model.id || model.name}
                                 >
-                                  {typeof model === 'string' ? model : model.name}
+                                  {model.name}
                                 </option>
                               ))}
                             </select>
@@ -1718,6 +2001,60 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
                   <div className="space-y-4">
                     <ResultCharts testResults={testResults} />
                     
+                    {/* Add Export Results button if there are results */}
+                    {Object.keys(testResults).length > 0 && (
+                      <div className="flex justify-end mb-4">
+                        <div className="relative inline-block text-left" ref={exportDropdownRef}>
+                          <div>
+                            <button
+                              type="button"
+                              className="inline-flex justify-center w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                              id="export-options-menu"
+                              onClick={() => {
+                                const menu = document.getElementById('export-options-dropdown');
+                                if (menu) {
+                                  menu.classList.toggle('hidden');
+                                }
+                              }}
+                            >
+                              Export Results
+                              <svg className="-mr-1 ml-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                              </svg>
+                            </button>
+                          </div>
+                          
+                          <div
+                            id="export-options-dropdown"
+                            className="hidden origin-top-right absolute right-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-20"
+                          >
+                            <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="export-options-menu">
+                              <button
+                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                role="menuitem"
+                                onClick={() => {
+                                  exportTestResults('json');
+                                  document.getElementById('export-options-dropdown')?.classList.add('hidden');
+                                }}
+                              >
+                                Export as JSON
+                              </button>
+                              <button
+                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                                role="menuitem"
+                                onClick={() => {
+                                  exportTestResults('csv');
+                                  document.getElementById('export-options-dropdown')?.classList.add('hidden');
+                                }}
+                              >
+                                Export as CSV
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
                     {/* Add the test output section */}
                     {Object.entries(testResults).map(([adapterId, adapterResult]) => (
                       <div key={adapterId} className="space-y-4">
@@ -1738,6 +2075,7 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
                                 error={test.error}
                                 duration={test.duration}
                                 passed={test.passed}
+                                retryCount={test.retryCount}
                               />
                             ))}
                           </div>

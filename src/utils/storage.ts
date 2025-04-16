@@ -6,6 +6,7 @@ export interface ConfigData {
   azureKey: string;
   azureEndpoint: string;
   bedrockKey: string;
+  bedrockSecretKey: string;
   bedrockRegion: string;
   ollamaEndpoint: string;
   googleKey: string;
@@ -22,6 +23,7 @@ const DEFAULT_CONFIG: ConfigData = {
   azureKey: '',
   azureEndpoint: '',
   bedrockKey: '',
+  bedrockSecretKey: '',
   bedrockRegion: '',
   ollamaEndpoint: '',
   googleKey: '',

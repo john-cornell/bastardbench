@@ -22,6 +22,7 @@ export function ConfigOverlay({ isOpen, onClose }: ConfigOverlayProps) {
   const [azureKey, setAzureKey] = useState('');
   const [azureEndpoint, setAzureEndpoint] = useState('');
   const [bedrockKey, setBedrockKey] = useState('');
+  const [bedrockSecretKey, setBedrockSecretKey] = useState('');
   const [bedrockRegion, setBedrockRegion] = useState('');
   const [ollamaEndpoint, setOllamaEndpoint] = useState('http://localhost:11434');
   const [googleKey, setGoogleKey] = useState('');
@@ -42,6 +43,7 @@ export function ConfigOverlay({ isOpen, onClose }: ConfigOverlayProps) {
       setAzureKey(config.azureKey);
       setAzureEndpoint(config.azureEndpoint);
       setBedrockKey(config.bedrockKey);
+      setBedrockSecretKey(config.bedrockSecretKey);
       setBedrockRegion(config.bedrockRegion);
       setOllamaEndpoint(config.ollamaEndpoint);
       setGoogleKey(config.googleKey);
@@ -62,6 +64,7 @@ export function ConfigOverlay({ isOpen, onClose }: ConfigOverlayProps) {
       azureKey,
       azureEndpoint,
       bedrockKey,
+      bedrockSecretKey,
       bedrockRegion,
       ollamaEndpoint,
       googleKey,
@@ -271,8 +274,8 @@ export function ConfigOverlay({ isOpen, onClose }: ConfigOverlayProps) {
                 <div className="flex justify-between items-center">
                   <h3 className="text-lg font-medium text-secondary-900">AWS Bedrock</h3>
                   <button
-                    onClick={() => handleTest('bedrock', () => testBedrock(bedrockKey, bedrockRegion))}
-                    disabled={!bedrockKey || !bedrockRegion || getTestStatus('bedrock').loading}
+                    onClick={() => handleTest('bedrock', () => testBedrock(bedrockKey, bedrockSecretKey, bedrockRegion))}
+                    disabled={!bedrockKey || !bedrockSecretKey || !bedrockRegion || getTestStatus('bedrock').loading}
                     className="px-3 py-1 text-sm font-medium text-primary-600 hover:text-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {getTestStatus('bedrock').loading ? 'Testing...' : 'Test Connection'}
@@ -286,6 +289,16 @@ export function ConfigOverlay({ isOpen, onClose }: ConfigOverlayProps) {
                     type="password"
                     value={bedrockKey}
                     onChange={(e) => setBedrockKey(e.target.value)}
+                    className="w-full px-3 py-2 border border-secondary-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    placeholder="..."
+                  />
+                  <label className="block text-sm font-medium text-secondary-700">
+                    Secret Key
+                  </label>
+                  <input
+                    type="password"
+                    value={bedrockSecretKey}
+                    onChange={(e) => setBedrockSecretKey(e.target.value)}
                     className="w-full px-3 py-2 border border-secondary-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
                     placeholder="..."
                   />

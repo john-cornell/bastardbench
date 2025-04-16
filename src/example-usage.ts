@@ -1,6 +1,8 @@
 import { OpenAIAdapter } from "./adapters/openai";
 import { TestRunner } from "./benchmark/TestRunner";
 import { BenchmarkConfig, TestCategory } from "./types/llm";
+import { loadConfig } from './utils/storage';
+import { crypticTests } from './types/cryptic';
 
 export async function runBenchmark() {
   const config: BenchmarkConfig = {
@@ -19,7 +21,7 @@ export async function runBenchmark() {
   ];
 
   for (const adapter of adapters) {
-    const results = await runner.runBenchmark(adapter);
+    const results = await runner.runBenchmark(adapter, crypticTests);
     console.log(`Results for ${adapter.name}:`);
     console.log(`Overall Score: ${results.overallScore.toFixed(2)}%`);
     

@@ -1,22 +1,19 @@
 import { BaseLLMAdapter } from './base';
 
 export class BedrockAdapter extends BaseLLMAdapter {
-  private accessKey: string;
-  private secretKey: string;
-  private region: string;
-  private model: string;
-
-  constructor(accessKey: string, secretKey: string, region: string, model: string = 'anthropic.claude-3-opus-20240229-v1:0') {
-    super('bedrock', 'AWS Bedrock Claude', 'AWS');
-    this.accessKey = accessKey;
-    this.secretKey = secretKey;
-    this.region = region;
-    this.model = model;
+  constructor(accessKeyId: string, secretAccessKey: string, region: string, model: string = 'anthropic.claude-v2') {
+    super({
+      model,
+      type: 'bedrock',
+      region,
+      apiKey: accessKeyId,
+      endpoint: secretAccessKey
+    });
   }
 
   async call(prompt: string): Promise<string> {
     try {
-      const response = await fetch(`https://bedrock.${this.region}.amazonaws.com/models/${this.model}/invoke`, {
+      const response = await fetch(`https://bedrock.${this.region}/models/${this.model}/invoke`, {
         method: 'POST',
         headers: {
           'Authorization': `AWS4-HMAC-SHA256 ${this.generateAWS4Signature()}`,
@@ -49,6 +46,15 @@ export class BedrockAdapter extends BaseLLMAdapter {
   private generateAWS4Signature(): string {
     // This is a simplified version. In production, you should use the AWS SDK
     // or a proper AWS4 signature implementation
-    return 'AWS4-HMAC-SHA256 Credential=' + this.accessKey + '/' + new Date().toISOString().split('T')[0] + '/' + this.region + '/bedrock/aws4_request';
+    const date = new Date().toISOString().split('T')[0];
+    const credential = `${this.apiKey}/${date}/${this.region}/bedrock/aws4_request`;
+    const signature = this.calculateSignature(this.endpoint as string, date);
+    return `AWS4-HMAC-SHA256 Credential=${credential}, Signature=${signature}`;
+  }
+
+  private calculateSignature(secretKey: string, date: string): string {
+    // This is a placeholder for the actual AWS4 signature calculation
+    // In production, use the AWS SDK or implement the full AWS4 signature algorithm
+    return Buffer.from(`${secretKey}${date}`, 'utf-8').toString('hex');
   }
 } 

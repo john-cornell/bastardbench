@@ -1,18 +1,17 @@
 import { BaseLLMAdapter } from './base';
 
-export class AnthropicAdapter extends BaseLLMAdapter {
-  constructor(apiKey: string, model: string = 'claude-3-opus-20240229') {
-    super({
-      model,
-      type: 'anthropic',
-      apiKey
-    });
+export class GeminiAdapter extends BaseLLMAdapter {
+  private apiKey: string;
+
+  constructor(apiKey: string, model: string = 'gemini-pro') {
+    super(model, 'gemini');
+    this.apiKey = apiKey;
   }
 
   async call(prompt: string): Promise<string> {
     try {
       // Use proxy server to avoid CORS issues
-      const proxyUrl = 'http://localhost:3001/api/anthropic';
+      const proxyUrl = 'http://localhost:3001/api/gemini';
       
       const response = await fetch(proxyUrl, {
         method: 'POST',
@@ -28,13 +27,13 @@ export class AnthropicAdapter extends BaseLLMAdapter {
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error?.message || 'Anthropic API error');
+        throw new Error(error.error?.message || 'Gemini API error');
       }
 
       const data = await response.json();
       return data.response;
     } catch (error) {
-      console.error('Anthropic adapter error:', error);
+      console.error('Gemini adapter error:', error);
       throw error;
     }
   }

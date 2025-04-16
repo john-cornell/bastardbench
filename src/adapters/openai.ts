@@ -2,32 +2,26 @@ import { BaseLLMAdapter } from './base';
 
 export class OpenAIAdapter extends BaseLLMAdapter {
   private apiKey: string;
-  private model: string;
 
-  constructor(apiKey: string, model: string = 'gpt-4') {
-    super('openai', 'OpenAI GPT-4', 'OpenAI');
+  constructor(apiKey: string, model: string = 'gpt-4-turbo-preview') {
+    super(model, 'openai');
     this.apiKey = apiKey;
-    this.model = model;
   }
 
   async call(prompt: string): Promise<string> {
     try {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      // Use proxy server to avoid CORS issues
+      const proxyUrl = 'http://localhost:3001/api/openai';
+      
+      const response = await fetch(proxyUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: this.model,
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-          temperature: 0.7,
-          max_tokens: 1000,
+          apiKey: this.apiKey,
+          prompt,
+          model: this.getModel()
         }),
       });
 
@@ -37,10 +31,18 @@ export class OpenAIAdapter extends BaseLLMAdapter {
       }
 
       const data = await response.json();
-      return data.choices[0].message.content;
+      return data.response;
     } catch (error) {
       console.error('OpenAI adapter error:', error);
       throw error;
     }
+  }
+
+  getModel(): string {
+    return this.model;
+  }
+
+  getType(): string {
+    return 'openai';
   }
 } 

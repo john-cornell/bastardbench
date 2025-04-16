@@ -68,7 +68,7 @@ export const testGoogle = async (apiKey: string): Promise<TestResult> => {
     const testModel = 'gemini-2.0-pro-exp';
     console.log(`Testing Google connection with experimental model: ${testModel}`);
     
-    const adapter = new GoogleAdapter(apiKey, testModel);
+    const adapter = new GoogleAdapter(apiKey, testModel, apiKey);
     console.log(`Created Google adapter for model: ${testModel}`);
     
     console.log('Attempting Google connection test...');
@@ -81,7 +81,7 @@ export const testGoogle = async (apiKey: string): Promise<TestResult> => {
       console.log('Falling back to standard model: gemini-pro');
       
       // Try with the standard model as fallback
-      const standardAdapter = new GoogleAdapter(apiKey, 'gemini-pro');
+      const standardAdapter = new GoogleAdapter(apiKey, 'gemini-pro', apiKey);
       const fallbackResponse = await standardAdapter.call('Test connection with standard model');
       console.log('Google connection test successful with standard model, response:', fallbackResponse);
       return { success: true, message: 'Connection successful with standard model (experimental model failed)' };

@@ -1,37 +1,40 @@
 import { BaseLLMAdapter } from './base';
 
-export class OllamaAdapter extends BaseLLMAdapter {
-  constructor(baseUrl: string = 'http://localhost:11434', model: string = 'llama2') {
+export class MistralAdapter extends BaseLLMAdapter {
+  constructor(apiKey: string, model: string = 'mistral-medium') {
     super({
       model,
-      type: 'ollama',
-      endpoint: baseUrl
+      type: 'mistral',
+      apiKey
     });
   }
 
   async call(prompt: string): Promise<string> {
     try {
-      const response = await fetch(`${this.endpoint}/api/generate`, {
+      // Use proxy server to avoid CORS issues
+      const proxyUrl = 'http://localhost:3001/api/mistral';
+      
+      const response = await fetch(proxyUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: this.getModel(),
+          apiKey: this.apiKey,
           prompt,
-          stream: false
+          model: this.getModel()
         }),
       });
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || 'Ollama API error');
+        throw new Error(error.error?.message || 'Mistral API error');
       }
 
       const data = await response.json();
       return data.response;
     } catch (error) {
-      console.error('Ollama adapter error:', error);
+      console.error('Mistral adapter error:', error);
       throw error;
     }
   }

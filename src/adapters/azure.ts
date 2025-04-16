@@ -1,15 +1,13 @@
 import { BaseLLMAdapter } from './base';
 
 export class AzureAdapter extends BaseLLMAdapter {
-  private apiKey: string;
-  private endpoint: string;
-  private model: string;
-
   constructor(apiKey: string, endpoint: string, model: string = 'gpt-4') {
-    super('azure', 'Azure OpenAI GPT-4', 'Azure');
-    this.apiKey = apiKey;
-    this.endpoint = endpoint;
-    this.model = model;
+    super({
+      model,
+      type: 'azure',
+      apiKey,
+      endpoint
+    });
   }
 
   async call(prompt: string): Promise<string> {
@@ -17,7 +15,7 @@ export class AzureAdapter extends BaseLLMAdapter {
       const response = await fetch(`${this.endpoint}/openai/deployments/${this.model}/chat/completions?api-version=2023-05-15`, {
         method: 'POST',
         headers: {
-          'api-key': this.apiKey,
+          'api-key': this.apiKey as string,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({

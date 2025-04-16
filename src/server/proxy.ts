@@ -73,7 +73,7 @@ app.post('/api/anthropic', (async (req: Request, res: Response) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
+        'Authorization': `Bearer ${apiKey}`,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -328,6 +328,38 @@ app.post('/api/google', (async (req: Request, res: Response) => {
     console.error('Google Proxy Error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
     res.status(500).json({ error: errorMessage });
+  }
+}) as RequestHandler);
+
+// Add Anthropic model discovery endpoint
+app.post('/api/anthropic-models', (async (req: Request, res: Response) => {
+  try {
+    const { apiKey } = req.body;
+    if (!apiKey) {
+      return res.status(400).json({ error: 'API key is required' });
+    }
+    console.log('Proxy: Fetching Anthropic models');
+    
+    const response = await fetch('https://api.anthropic.com/v1/models', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+        'anthropic-version': '2023-06-01',
+      }
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json() as { error?: { message?: string } };
+      throw new Error(errorData.error?.message || 'Anthropic API error');
+    }
+    
+    const data = await response.json() as { models?: any[] };
+    console.log(`Proxy: Successfully fetched ${data.models?.length || 0} Anthropic models`);
+    res.json(data);
+  } catch (error) {
+    console.error('Anthropic models API error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Anthropic API error' });
   }
 }) as RequestHandler);
 

@@ -26,6 +26,33 @@ const saveToStorage = (key: string, value: any) => {
   }
 };
 
+// Helper function to validate imported test suites
+const validateTestSuites = (data: any): TestSuite[] => {
+  // Check if it's an array
+  if (!Array.isArray(data)) {
+    console.error('Imported data is not an array');
+    return [];
+  }
+
+  // Basic validation of required fields for each suite
+  const validSuites = data.filter(suite => {
+    return (
+      suite &&
+      typeof suite === 'object' &&
+      typeof suite.id === 'string' &&
+      typeof suite.name === 'string' &&
+      Array.isArray(suite.categories) &&
+      Array.isArray(suite.adapters)
+    );
+  });
+
+  if (validSuites.length !== data.length) {
+    console.warn(`${data.length - validSuites.length} test suites were invalid and filtered out`);
+  }
+
+  return validSuites;
+};
+
 export function useTestSuites() {
   // Initialize state with data from localStorage
   const [testSuites, setTestSuites] = useState<TestSuite[]>(() => {
@@ -69,6 +96,9 @@ export function useTestSuites() {
       adapters: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      settings: {
+        autoUpdateAdapterNames: true
+      }
     };
     
     setTestSuites(prev => {
@@ -137,6 +167,84 @@ export function useTestSuites() {
       ),
     });
   }, [activeSuite, updateTestSuite]);
+  
+  // Export test suites to a JSON file
+  const exportTestSuites = useCallback(() => {
+    try {
+      // Create a JSON string with proper formatting
+      const suitesJson = JSON.stringify(testSuites, null, 2);
+      
+      // Create a blob and download link
+      const blob = new Blob([suitesJson], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      
+      // Create a temporary download link
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `bastardbench-suites-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      
+      // Clean up
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+      
+      return true;
+    } catch (error) {
+      console.error('Error exporting test suites:', error);
+      return false;
+    }
+  }, [testSuites]);
+  
+  // Import test suites from a JSON file
+  const importTestSuites = useCallback((fileContent: string, importMode: 'replace' | 'merge' = 'merge') => {
+    try {
+      // Parse and validate the file content
+      const parsedData = JSON.parse(fileContent);
+      const validSuites = validateTestSuites(parsedData);
+      
+      if (validSuites.length === 0) {
+        throw new Error('No valid test suites found in the imported file');
+      }
+      
+      // Update state based on import mode
+      setTestSuites(prev => {
+        let newSuites: TestSuite[];
+        
+        if (importMode === 'replace') {
+          // Replace all existing suites
+          newSuites = validSuites;
+        } else {
+          // Merge with existing suites, avoiding duplicates by ID
+          const existingIds = new Set(prev.map(suite => suite.id));
+          const uniqueNewSuites = validSuites.filter(suite => !existingIds.has(suite.id));
+          newSuites = [...prev, ...uniqueNewSuites];
+        }
+        
+        // Save to localStorage
+        saveToStorage(STORAGE_KEY, newSuites);
+        return newSuites;
+      });
+      
+      // Set the first imported suite as active if replacing
+      if (importMode === 'replace' && validSuites.length > 0) {
+        setActiveSuite(validSuites[0]);
+      }
+      
+      return {
+        success: true,
+        importedCount: validSuites.length
+      };
+    } catch (error) {
+      console.error('Error importing test suites:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error during import'
+      };
+    }
+  }, []);
 
   return {
     testSuites,
@@ -148,5 +256,7 @@ export function useTestSuites() {
     addAdapter,
     removeAdapter,
     updateAdapter,
+    exportTestSuites,
+    importTestSuites
   };
 } 

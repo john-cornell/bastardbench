@@ -31,7 +31,7 @@ export function CrypticBenchmark({ adapter, tests, iterations = 5 }: CrypticBenc
       };
 
       const runner = new TestRunner(config);
-      const benchmarkResults = await runner.runBenchmark(adapter);
+      const benchmarkResults = await runner.runBenchmark(adapter, tests);
       setResults(benchmarkResults);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred while running the benchmark');

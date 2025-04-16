@@ -1,55 +1,83 @@
-export async function callGoogle(prompt: string, model: string, config: Record<string, string>): Promise<string> {
-  const { apiKey } = config;
-  const apiPath = config.apiPath || null; // Get API path if available
-  
-  // Use our proxy server instead of making direct API calls
-  // This avoids CORS issues when running in the browser
-  const proxyUrl = 'http://localhost:3001/api/google';
-  
+export const callGoogle = async (
+  prompt: string,
+  model: string,
+  config: {
+    apiKey: string;
+    apiPath?: string;
+    apiVersion?: string;
+  }
+): Promise<string> => {
   try {
-    console.log(`[Google Provider] Making request for model: ${model}`);
+    // Use proxy server to avoid CORS issues
+    const proxyUrl = 'http://localhost:3001/api/google';
     
-    const requestBody = {
-      apiKey,
-      prompt,
-      model,
-      apiPath // Pass API path to proxy
-    };
+    // Generate API path if not provided
+    const modelApiPath = config.apiPath || getApiPathForModel(model, config.apiVersion);
     
-    console.log(`[Google Provider] Request body: ${JSON.stringify({ ...requestBody, apiKey: "REDACTED" })}`);
+    console.log(`Google API request:
+      - Model: ${model}
+      - API Path: ${modelApiPath}
+      - Prompt length: ${prompt.length}
+      - API Key length: ${config.apiKey ? config.apiKey.length : 0}
+    `);
     
     const response = await fetch(proxyUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify({
+        apiKey: config.apiKey,
+        prompt,
+        model,
+        apiPath: modelApiPath
+      }),
     });
-  
-    console.log(`[Google Provider] Response status: ${response.status} ${response.statusText}`);
-    
+
     if (!response.ok) {
-      const errorData = await response.json();
-      console.error(`[Google Provider] Error response:`, errorData);
-      throw new Error(errorData.error || `Google API error: ${response.statusText}`);
+      const errorText = await response.text();
+      console.error(`Google API error response: ${errorText}`);
+      
+      try {
+        const error = JSON.parse(errorText);
+        throw new Error(error.error || `Google API error: ${response.status} ${response.statusText}`);
+      } catch (parseError) {
+        throw new Error(`Google API error: ${response.status} ${response.statusText} - ${errorText}`);
+      }
     }
-  
-    // Get the response data
-    const responseText = await response.text();
-    console.log(`[Google Provider] Raw response text (first 200 chars): ${responseText.substring(0, 200)}`);
-    
-    let data;
-    try {
-      data = JSON.parse(responseText);
-      console.log(`[Google Provider] Parsed response type:`, typeof data.response);
-    } catch (error) {
-      console.error(`[Google Provider] Failed to parse response as JSON:`, error);
-      throw new Error(`Failed to parse response from Google API`);
-    }
-    
+
+    const data = await response.json();
     return data.response;
   } catch (error) {
-    console.error('Error in Google provider:', error);
+    console.error('Google API error:', error);
     throw error;
   }
-} 
+};
+
+const getApiPathForModel = (model: string, apiVersion?: string): string => {
+  // Clean up model name - remove 'models/' prefix if present
+  const cleanModelName = model.replace(/^models\//, '');
+  
+  // If API version is provided, use that
+  if (apiVersion) {
+    return `${apiVersion}/models/${cleanModelName}:generateContent`;
+  }
+  
+  // Specifically check for Gemma models - all Gemma models should use v1beta
+  if (/gemma-[0-9]/.test(cleanModelName)) {
+    return `v1beta/models/${cleanModelName}:generateContent`;
+  }
+  
+  // For experimental models, use v1beta
+  if (/(-preview|-exp|-\d{2}-\d{2})/.test(cleanModelName)) {
+    return `v1beta/models/${cleanModelName}:generateContent`;
+  }
+  
+  // For models with version numbers 2.0+ use v1beta
+  if (/(2\.[0-9]|3\.[0-9])/.test(cleanModelName)) {
+    return `v1beta/models/${cleanModelName}:generateContent`;
+  }
+  
+  // Default to v1 for standard models
+  return `v1/models/${cleanModelName}:generateContent`;
+}; 

@@ -1,8 +1,8 @@
 export interface LLMAdapter {
-  id: string;
-  name: string;
-  provider: string;
   call(prompt: string): Promise<string>;
+  getModel(): string;
+  getType(): string;
+  readonly name: string;
 }
 
 export interface TestCase {
@@ -30,7 +30,8 @@ export interface BenchmarkResult {
 
 export enum TestCategory {
   CRYPTIC = 'cryptic',
-  CODE = 'code'
+  CODE = 'code',
+  REASONING = 'reasoning'
 }
 
 export interface BenchmarkConfig {
