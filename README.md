@@ -32,9 +32,9 @@ The project is actively under development. Currently, the Cryptic test suite is 
    ```bash
    pnpm install
    ```
-3. Start the development server:
+3. Start the development server and proxy:
    ```bash
-   pnpm dev
+   pnpm start
    ```
 
 ## Project Structure
