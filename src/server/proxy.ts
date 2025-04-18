@@ -34,10 +34,20 @@ interface GoogleResponse {
 // OpenAI proxy
 app.post('/api/openai', (async (req: Request, res: Response) => {
   try {
-    const { apiKey, prompt } = req.body;
+    const { apiKey, prompt, model } = req.body;
     if (!apiKey) {
       return res.status(400).json({ error: 'API key is required' });
     }
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    console.log('OpenAI Proxy Request:', {
+      model: model || 'gpt-4',
+      promptLength: prompt.length,
+      apiKeyLength: apiKey.length
+    });
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -45,20 +55,35 @@ app.post('/api/openai', (async (req: Request, res: Response) => {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4',
+        model: model || 'gpt-4',
         messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
         max_tokens: 1000,
       }),
     });
+
     if (!response.ok) {
-      const errorData = await response.json() as { error?: { message?: string } };
-      throw new Error(errorData.error?.message || 'OpenAI API error');
+      const errorText = await response.text();
+      console.error('OpenAI API Error Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        error: errorText
+      });
+
+      try {
+        const errorData = JSON.parse(errorText);
+        throw new Error(errorData.error?.message || 'OpenAI API error');
+      } catch (parseError) {
+        throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
+      }
     }
+
     const data = await response.json() as OpenAIResponse;
     res.json({ response: data.choices[0].message.content });
   } catch (error) {
-    console.error('OpenAI API error:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'OpenAI API error' });
+    console.error('OpenAI Proxy Error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    res.status(500).json({ error: errorMessage });
   }
 }) as RequestHandler);
 

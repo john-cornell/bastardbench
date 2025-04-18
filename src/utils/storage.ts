@@ -84,11 +84,21 @@ export const saveConfig = (config: ConfigData): string[] => {
     if (errors.length > 0) {
       return errors;
     }
-    const encryptedData = encrypt(JSON.stringify(config));
+
+    const jsonString = JSON.stringify(config);
+    console.log('Saving config with masked keys');
+    
+    const encryptedData = encrypt(jsonString);
+    if (!encryptedData) {
+      console.warn('Failed to encrypt config data');
+      return ['Failed to encrypt configuration'];
+    }
+
+    console.log('Saving encrypted data');
     localStorage.setItem(STORAGE_KEY, encryptedData);
     return [];
   } catch (e) {
-    console.error('Failed to save config:', e);
+    console.warn('Failed to save config:', e);
     return ['Failed to save configuration'];
   }
 };
@@ -96,13 +106,49 @@ export const saveConfig = (config: ConfigData): string[] => {
 export const loadConfig = (): ConfigData => {
   try {
     const encryptedData = localStorage.getItem(STORAGE_KEY);
-    if (!encryptedData) return DEFAULT_CONFIG;
+    if (!encryptedData) {
+      console.log('No config data found in localStorage');
+      return DEFAULT_CONFIG;
+    }
     
+    console.log('Loading encrypted data');
     const decryptedData = decrypt(encryptedData);
-    const parsedData = JSON.parse(decryptedData);
-    return { ...DEFAULT_CONFIG, ...parsedData };
+    
+    if (!decryptedData) {
+      console.warn('Failed to decrypt config data - clearing corrupted data');
+      clearConfig();
+      return DEFAULT_CONFIG;
+    }
+
+    try {
+      const parsedData = JSON.parse(decryptedData);
+      
+      // Validate that the parsed data has the expected structure
+      if (typeof parsedData !== 'object' || parsedData === null) {
+        console.warn('Invalid config data structure - clearing corrupted data');
+        clearConfig();
+        return DEFAULT_CONFIG;
+      }
+
+      // Ensure all required fields are present
+      const validatedData = { ...DEFAULT_CONFIG, ...parsedData };
+      
+      // Validate the data
+      const errors = validateConfig(validatedData);
+      if (errors.length > 0) {
+        console.warn('Config validation errors:', errors);
+        return validatedData;
+      }
+
+      return validatedData;
+    } catch (parseError) {
+      console.warn('Failed to parse decrypted config:', parseError);
+      clearConfig();
+      return DEFAULT_CONFIG;
+    }
   } catch (e) {
-    console.error('Failed to load config:', e);
+    console.warn('Failed to load config:', e);
+    clearConfig();
     return DEFAULT_CONFIG;
   }
 };
