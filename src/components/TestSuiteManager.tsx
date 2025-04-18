@@ -625,6 +625,24 @@ interface GoogleResponse {
   answer: string;
 }
 
+// Add these interfaces at the top with other interfaces
+interface FailedTestRun {
+  suiteId: string;
+  suiteName: string;
+  timestamp: string;
+  status: 'failed' | 'stopped';
+  failedTests: Array<{
+    adapterId: string;
+    adapterName: string;
+    category: string;
+    testName: string;
+    prompt: string;
+    error?: string;
+    retryCount: number;
+  }>;
+  results: Record<string, any>;
+}
+
 export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
   const {
     testSuites,
@@ -671,6 +689,9 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const exportDropdownRef = useRef<HTMLDivElement>(null);
   
+  // Add these state variables with other state variables
+  const [failedRunFile, setFailedRunFile] = useState<File | null>(null);
+
   // Add effect to handle clicks outside dropdown
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -1035,18 +1056,53 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
     setIsStoppingTests(false);
     setActiveRequestIds(new Set());
     setIsTestRunning(false);
-    setTestResults({}); // Initialize empty results object
     
-    // Store a reference to the current test run so we can identify if it's been cancelled
+    // Load existing test run state if available
+    const existingState = localStorage.getItem(`testRunState-${selectedSuiteId}`);
+    const testRunState: TestRunState = existingState ? JSON.parse(existingState) : {
+      suiteId: selectedSuiteId,
+      startTime: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      status: 'running',
+      progress: {},
+      results: {}
+    };
+    
+    // Store a reference to the current test run
     const testRunId = Date.now().toString();
-    // @ts-ignore - Add this property to the component instance
     (window as any).__currentTestRunId = testRunId;
     
     try {
       const suite = testSuites.find(s => s.id === selectedSuiteId);
       if (!suite) return;
 
-      const results: Record<string, any> = {};
+      const results = testRunState.results;
+      
+      // Function to save test run state
+      const saveTestRunState = () => {
+        testRunState.lastUpdated = new Date().toISOString();
+        testRunState.results = results;
+        localStorage.setItem(`testRunState-${selectedSuiteId}`, JSON.stringify(testRunState));
+      };
+      
+      // Function to check if a test has already been completed
+      const isTestCompleted = (adapterId: string, category: string, testName: string) => {
+        return testRunState.progress[adapterId]?.[category]?.completedTests?.includes(testName) || false;
+      };
+      
+      // Function to mark a test as completed
+      const markTestCompleted = (adapterId: string, category: string, testName: string) => {
+        if (!testRunState.progress[adapterId]) {
+          testRunState.progress[adapterId] = {};
+        }
+        if (!testRunState.progress[adapterId][category]) {
+          testRunState.progress[adapterId][category] = { completedTests: [] };
+        }
+        if (!testRunState.progress[adapterId][category].completedTests.includes(testName)) {
+          testRunState.progress[adapterId][category].completedTests.push(testName);
+        }
+        saveTestRunState();
+      };
       
       // Function to check if current test run is still active
       const isTestRunActive = () => {
@@ -1055,10 +1111,26 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
       
       // Run a single test and respect cancellation
       const runSingleTest = async (adapter: any, category: string, test: { name: string; prompt: string; answer: string }) => {
+        // Skip if test was already completed
+        if (isTestCompleted(adapter.id, category, test.name)) {
+          console.log(`Skipping already completed test: ${test.name}`);
+          return null;
+        }
+        
         if (!isTestRunActive()) {
           console.log('Test run cancelled, skipping test');
           return null;
         }
+        
+        // Mark this test as current
+        if (!testRunState.progress[adapter.id]) {
+          testRunState.progress[adapter.id] = {};
+        }
+        if (!testRunState.progress[adapter.id][category]) {
+          testRunState.progress[adapter.id][category] = { completedTests: [] };
+        }
+        testRunState.progress[adapter.id][category].currentTest = test.name;
+        saveTestRunState();
         
         let passed = false;
         let retryCount = 0;
@@ -1079,24 +1151,34 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
             try {
               response = await llmAdapter.call(CRYPTIC_SYSTEM_PROMPT + test.prompt);
               
-              // Add detailed logging for Google adapter
-              if (adapter.type === 'google') {
-                console.log('Google Adapter Raw Response:', response);
+              // Check if the response is a valid answer
+              const isValidAnswer = (response: any): boolean => {
+                if (!response) return false;
+                
                 try {
-                  const parsedGoogleResponse = typeof response === 'string' ? JSON.parse(response) : response;
-                  const googleAnswer = (parsedGoogleResponse as unknown as GoogleResponse).answer?.toLowerCase().trim();
-                  passed = googleAnswer === test.answer.toLowerCase().trim();
-                  console.log('Google adapter comparison:', {
-                    testName: test.name,
-                    prompt: test.prompt,
-                    expected: test.answer.toLowerCase().trim(),
-                    actual: googleAnswer,
-                    passed
-                  });
-                } catch (parseError) {
-                  console.error('Error parsing Google response:', parseError);
-                  passed = false;
+                  // For Google adapter
+                  if (adapter.type === 'google') {
+                    const parsed = typeof response === 'string' ? JSON.parse(response) : response;
+                    return !!parsed?.answer;
+                  }
+                  
+                  // For Ollama adapter
+                  if (adapter.type === 'ollama') {
+                    const { parsedResponse, modelAnswer } = parseOllamaResponse(response);
+                    return !!modelAnswer;
+                  }
+                  
+                  // For other adapters
+                  const parsed = typeof response === 'string' ? JSON.parse(response) : response;
+                  return !!parsed?.answer;
+                } catch (e) {
+                  return false;
                 }
+              };
+              
+              // If response is not a valid answer, throw an error to trigger retry
+              if (!isValidAnswer(response)) {
+                throw new Error('Invalid response format - no answer found');
               }
               
               // Check if test run was cancelled while this request was in flight
@@ -1115,21 +1197,16 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
                 return null;
               }
               
-              // Check if error is a 500 status that should be retried
-              const is500Error = llmError instanceof Error && 
-                (llmError.toString().includes('500') || 
-                 llmError.toString().includes('Internal Server Error') ||
-                 (llmError as any)?.status === 500);
-              
-              if (is500Error && retryCount < maxRetries) {
+              // Retry for any error that isn't a valid answer
+              if (retryCount < maxRetries) {
                 retryCount++;
                 const backoffTime = Math.min(1000 * Math.pow(2, retryCount), 30000); // Exponential backoff, max 30 seconds
-                console.log(`500 error detected, retrying ${retryCount}/${maxRetries} after ${backoffTime}ms: ${llmError.message}`);
+                console.log(`Error detected (${llmError.message}), retrying ${retryCount}/${maxRetries} after ${backoffTime}ms`);
                 await new Promise(resolve => setTimeout(resolve, backoffTime));
                 return executeTest(); // Retry the test
               }
               
-              throw llmError; // Re-throw if not a 500 error or max retries exceeded
+              throw llmError; // Re-throw if max retries exceeded
             }
             
             const duration = Date.now() - startTime;
@@ -1219,31 +1296,48 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
         return executeTest();
       };
       
-      // Process each adapter
-      for (const adapter of suite.adapters) {
+      // Process each category
+      for (const category of suite.categories) {
         if (!isTestRunActive()) break;
         
-        const adapterResults = {
-          name: adapter.name,
-          type: adapter.type,
-          model: adapter.model,
-          results: [] as any[]
-        };
+        const categoryTests = getTestsForCategory(category);
         
-        // Process each category
-        for (const category of suite.categories) {
+        // Process each test across all adapters
+        for (const test of categoryTests) {
           if (!isTestRunActive()) break;
           
-          const categoryTests = getTestsForCategory(category);
-          const categoryResults = {
-            category,
-            tests: [] as any[],
-            overallScore: 0
-          };
+          console.log(`\nRunning test "${test.name}" across all adapters:`);
           
-          // Process each test
-          for (const test of categoryTests) {
+          // Run the test for each adapter
+          for (const adapter of suite.adapters) {
             if (!isTestRunActive()) break;
+            
+            // Skip if this test was already completed for this adapter
+            if (isTestCompleted(adapter.id, category, test.name)) {
+              console.log(`Skipping already completed test for adapter ${adapter.name}`);
+              continue;
+            }
+            
+            // Initialize adapter results if not exists
+            if (!results[adapter.id]) {
+              results[adapter.id] = {
+                name: adapter.name,
+                type: adapter.type,
+                model: adapter.model,
+                results: []
+              };
+            }
+            
+            // Initialize category results if not exists
+            let categoryResults = results[adapter.id].results.find(r => r.category === category);
+            if (!categoryResults) {
+              categoryResults = {
+                category,
+                tests: [],
+                overallScore: 0
+              };
+              results[adapter.id].results.push(categoryResults);
+            }
             
             // Run the test and wait for its completion
             const testResult = await runSingleTest(adapter, category, test);
@@ -1260,39 +1354,43 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
             categoryResults.overallScore = (passedTests / totalTests) * 100;
             
             // Update results after each test
-            results[adapter.id] = {
-              ...adapterResults,
-              results: [...adapterResults.results.filter(r => r.category !== category), categoryResults]
-            };
             setTestResults({ ...results });
+            saveTestRunState();
             
-            // Add a small delay between tests
+            // Add a small delay between adapter tests
             if (isTestRunActive()) {
               await new Promise(resolve => setTimeout(resolve, 500));
             }
           }
           
-          if (isTestRunActive() && categoryResults.tests.length > 0) {
-            adapterResults.results.push(categoryResults);
+          // Add a small delay between tests
+          if (isTestRunActive()) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
           }
-        }
-        
-        if (isTestRunActive() && adapterResults.results.length > 0) {
-          results[adapter.id] = adapterResults;
-          setTestResults({ ...results });
         }
       }
       
-      // After all tests are complete, save the results
+      // After all tests are complete, save the results and clear the state
       if (Object.keys(results).length > 0) {
         const success = saveTestResults(selectedSuiteId, suite.name, results);
         if (!success) {
           console.warn('Failed to save test results to storage');
         }
+        // Clear the test run state
+        localStorage.removeItem(`testRunState-${selectedSuiteId}`);
       }
       
     } catch (error) {
       console.error('Error running tests:', error);
+      // Update test run state to failed
+      testRunState.status = 'failed';
+      saveTestRunState();
+      
+      // Save the failed run to a file
+      const suite = testSuites.find(s => s.id === selectedSuiteId);
+      if (suite) {
+        saveFailedRunToFile(testRunState, suite.name, results);
+      }
     } finally {
       // Clean up the test run ID
       if ((window as any).__currentTestRunId === testRunId) {
@@ -1304,6 +1402,31 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
       setActiveRequestIds(new Set());
       setIsTestRunning(false);
     }
+  };
+
+  // Add a function to resume a test run
+  const handleResumeTests = async () => {
+    if (!selectedSuiteId) return;
+    
+    const existingState = localStorage.getItem(`testRunState-${selectedSuiteId}`);
+    if (!existingState) {
+      console.log('No saved test run state found');
+      return;
+    }
+    
+    const testRunState = JSON.parse(existingState);
+    if (testRunState.status === 'completed') {
+      console.log('Test run is already completed');
+      return;
+    }
+    
+    // Set the test run state to running
+    testRunState.status = 'running';
+    testRunState.lastUpdated = new Date().toISOString();
+    localStorage.setItem(`testRunState-${selectedSuiteId}`, JSON.stringify(testRunState));
+    
+    // Start the test run
+    handleRunTests();
   };
   
   const handleStopTests = () => {
@@ -1321,6 +1444,13 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
       }
     }
     console.log('Test run cancelled, request queue cleared');
+    
+    // Save the stopped run to a file
+    const suite = testSuites.find(s => s.id === selectedSuiteId);
+    if (suite && testRunState) {
+      testRunState.status = 'stopped';
+      saveFailedRunToFile(testRunState, suite.name, testResults);
+    }
     
     // Force reset after a short delay if needed
     setTimeout(() => {
@@ -1569,6 +1699,115 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
     } catch (error) {
       console.error('Error exporting test results:', error);
       alert('Failed to export test results');
+    }
+  };
+
+  // Add these functions after the existing functions
+  const saveFailedRunToFile = (testRunState: TestRunState, suiteName: string, results: Record<string, any>) => {
+    const failedTests: FailedTestRun['failedTests'] = [];
+    
+    // Find all failed tests
+    Object.entries(results).forEach(([adapterId, adapterResult]) => {
+      adapterResult.results.forEach((categoryResult: any) => {
+        categoryResult.tests.forEach((test: any) => {
+          if (!test.passed || test.error) {
+            failedTests.push({
+              adapterId,
+              adapterName: adapterResult.name,
+              category: categoryResult.category,
+              testName: test.testName,
+              prompt: test.prompt,
+              error: test.error,
+              retryCount: test.retryCount || 0
+            });
+          }
+        });
+      });
+    });
+    
+    const failedRun: FailedTestRun = {
+      suiteId: testRunState.suiteId,
+      suiteName,
+      timestamp: new Date().toISOString(),
+      status: testRunState.status,
+      failedTests,
+      results
+    };
+    
+    // Create a blob and download link
+    const blob = new Blob([JSON.stringify(failedRun, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    
+    // Create a temporary download link
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `failed-run-${suiteName}-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    
+    // Clean up
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 100);
+  };
+
+  const loadFailedRunFromFile = (file: File): Promise<FailedTestRun> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const content = event.target?.result as string;
+          const failedRun = JSON.parse(content) as FailedTestRun;
+          resolve(failedRun);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(file);
+    });
+  };
+
+  // Add this function to handle file selection
+  const handleFailedRunFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setFailedRunFile(file);
+    }
+  };
+
+  // Add this function to restart a failed run
+  const handleRestartFailedRun = async () => {
+    if (!failedRunFile) return;
+    
+    try {
+      const failedRun = await loadFailedRunFromFile(failedRunFile);
+      
+      // Set the selected suite
+      setSelectedSuiteId(failedRun.suiteId);
+      
+      // Create a new test run state
+      const testRunState: TestRunState = {
+        suiteId: failedRun.suiteId,
+        startTime: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+        status: 'running',
+        progress: {},
+        results: failedRun.results
+      };
+      
+      // Save the state
+      localStorage.setItem(`testRunState-${failedRun.suiteId}`, JSON.stringify(testRunState));
+      
+      // Start the test run
+      handleRunTests();
+      
+      // Clear the file
+      setFailedRunFile(null);
+    } catch (error) {
+      console.error('Error loading failed run:', error);
+      alert('Failed to load the failed run file. Please check the file format.');
     }
   };
 

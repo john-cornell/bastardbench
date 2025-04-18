@@ -20,6 +20,22 @@ export interface TestSuite {
   updatedAt: string;
 }
 
+export interface TestRunState {
+  suiteId: string;
+  startTime: string;
+  lastUpdated: string;
+  status: 'running' | 'paused' | 'completed' | 'failed';
+  progress: {
+    [adapterId: string]: {
+      [category: string]: {
+        completedTests: string[]; // Array of test names that have been completed
+        currentTest?: string; // Current test being run
+      };
+    };
+  };
+  results: Record<string, any>; // Partial test results
+}
+
 export const DEFAULT_TEST_SUITE: TestSuite = {
   id: 'default',
   name: 'Default Suite',
