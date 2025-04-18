@@ -6,7 +6,7 @@ A comprehensive benchmarking suite for evaluating LLM performance across various
 
 The project is actively under development. Currently, the Cryptic test suite is fully functional and includes:
 
-- 56 carefully crafted cryptic crossword clues - this is only a small subset of all the clues actually being run when I run Benchmark, as I'm avoiding models being trained on them 
+- 56 carefully crafted cryptic crossword clues - this is only a small subset of all the clues actually being run when I run BastardBench, as I'm avoiding models being trained on them 
 - Automated test execution and evaluation
 - Detailed logging of test results
 - Support for multiple LLM providers
