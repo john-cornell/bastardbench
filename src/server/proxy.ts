@@ -35,19 +35,27 @@ interface GoogleResponse {
 app.post('/api/openai', (async (req: Request, res: Response) => {
   try {
     const { apiKey, prompt, model } = req.body;
+    
+    // Add detailed logging for debugging
+    console.log('OpenAI Proxy Request Details:', {
+      hasApiKey: !!apiKey,
+      apiKeyLength: apiKey?.length || 0,
+      apiKeyPrefix: apiKey?.substring(0, 7) + '...',
+      hasPrompt: !!prompt,
+      promptLength: prompt?.length || 0,
+      model: model || 'gpt-4'
+    });
+
     if (!apiKey) {
+      console.error('OpenAI Proxy Error: No API key provided');
       return res.status(400).json({ error: 'API key is required' });
     }
     if (!prompt) {
+      console.error('OpenAI Proxy Error: No prompt provided');
       return res.status(400).json({ error: 'Prompt is required' });
     }
 
-    console.log('OpenAI Proxy Request:', {
-      model: model || 'gpt-4',
-      promptLength: prompt.length,
-      apiKeyLength: apiKey.length
-    });
-
+    console.log('Making OpenAI API request...');
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -62,6 +70,9 @@ app.post('/api/openai', (async (req: Request, res: Response) => {
       }),
     });
 
+    console.log('OpenAI API Response Status:', response.status);
+    console.log('OpenAI API Response Headers:', Object.fromEntries([...response.headers.entries()]));
+
     if (!response.ok) {
       const errorText = await response.text();
       console.error('OpenAI API Error Response:', {
@@ -72,9 +83,16 @@ app.post('/api/openai', (async (req: Request, res: Response) => {
 
       try {
         const errorData = JSON.parse(errorText);
-        throw new Error(errorData.error?.message || 'OpenAI API error');
+        // Return the error directly to the client with the same status code
+        return res.status(response.status).json({ 
+          error: errorData.error?.message || 'OpenAI API error',
+          details: errorData
+        });
       } catch (parseError) {
-        throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
+        // If we can't parse the error as JSON, return the raw text
+        return res.status(response.status).json({ 
+          error: `OpenAI API error (${response.status}): ${errorText}`
+        });
       }
     }
 

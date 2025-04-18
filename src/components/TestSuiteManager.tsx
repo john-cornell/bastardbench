@@ -434,8 +434,25 @@ const getTestsForCategory = (category: TestCategory): Test[] => {
         evaluate: (response: string) => {
           try {
             const parsed = JSON.parse(response);
-            return parsed.answer.toLowerCase() === test.answer.toLowerCase();
-          } catch {
+            // The response should have an 'answer' field that matches the test answer
+            const modelAnswer = parsed.answer?.toLowerCase().trim();
+            const expectedAnswer = test.answer.toLowerCase().trim();
+            const passed = modelAnswer === expectedAnswer;
+            
+            // Log detailed comparison for both success and failure
+            console.log(`Test "${test.name || 'Unnamed Cryptic Test'}" (${test.prompt}):`, {
+              expected: expectedAnswer,
+              actual: modelAnswer,
+              passed,
+              fullResponse: parsed
+            });
+            
+            return passed;
+          } catch (e) {
+            console.error(`Error evaluating test "${test.name || 'Unnamed Cryptic Test'}" (${test.prompt}):`, {
+              error: e,
+              rawResponse: response
+            });
             return false;
           }
         }
@@ -1070,8 +1087,10 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
                   const googleAnswer = (parsedGoogleResponse as unknown as GoogleResponse).answer?.toLowerCase().trim();
                   passed = googleAnswer === test.answer.toLowerCase().trim();
                   console.log('Google adapter comparison:', {
-                    modelAnswer: googleAnswer,
-                    expectedAnswer: test.answer.toLowerCase().trim(),
+                    testName: test.name,
+                    prompt: test.prompt,
+                    expected: test.answer.toLowerCase().trim(),
+                    actual: googleAnswer,
                     passed
                   });
                 } catch (parseError) {
@@ -1130,7 +1149,13 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
               const { parsedResponse: ollamaParsedResponse, modelAnswer } = parseOllamaResponse(response);
               parsedResponse = ollamaParsedResponse;
               passed = modelAnswer ? modelAnswer === test.answer.toLowerCase().trim() : false;
-              console.log('Comparing answers:', { modelAnswer, expectedAnswer: test.answer.toLowerCase().trim(), passed });
+              console.log('Ollama adapter comparison:', {
+                testName: test.name,
+                prompt: test.prompt,
+                expected: test.answer.toLowerCase().trim(),
+                actual: modelAnswer,
+                passed
+              });
             } else if (adapter.type === 'google') {
               // Handle Google adapter response
               try {
@@ -1138,12 +1163,32 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
                 const googleAnswer = (parsedGoogleResponse as unknown as GoogleResponse).answer?.toLowerCase().trim();
                 passed = googleAnswer === test.answer.toLowerCase().trim();
                 console.log('Google adapter comparison:', {
-                  modelAnswer: googleAnswer,
-                  expectedAnswer: test.answer.toLowerCase().trim(),
+                  testName: test.name,
+                  prompt: test.prompt,
+                  expected: test.answer.toLowerCase().trim(),
+                  actual: googleAnswer,
                   passed
                 });
               } catch (parseError) {
                 console.error('Error parsing Google response:', parseError);
+                passed = false;
+              }
+            } else {
+              // Handle other adapters
+              try {
+                const parsedResponse = typeof response === 'string' ? JSON.parse(response) : response;
+                const modelAnswer = parsedResponse.answer?.toLowerCase().trim();
+                passed = modelAnswer === test.answer.toLowerCase().trim();
+                console.log('Test comparison:', {
+                  testName: test.name,
+                  prompt: test.prompt,
+                  expected: test.answer.toLowerCase().trim(),
+                  actual: modelAnswer,
+                  passed,
+                  fullResponse: parsedResponse
+                });
+              } catch (parseError) {
+                console.error('Error parsing response:', parseError);
                 passed = false;
               }
             }

@@ -25,13 +25,31 @@ export class OpenAIAdapter extends BaseLLMAdapter {
         }),
       });
 
+      // First try to get the response as text to see what we're dealing with
+      const responseText = await response.text();
+
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error?.message || 'OpenAI API error');
+        let errorMessage = 'OpenAI API error';
+        try {
+          const error = JSON.parse(responseText);
+          errorMessage = error.error || error.message || errorMessage;
+          if (error.details) {
+            console.error('OpenAI API Error Details:', error.details);
+          }
+        } catch (e) {
+          // If we can't parse the error as JSON, use the text
+          errorMessage = responseText || response.statusText || errorMessage;
+        }
+        throw new Error(`OpenAI API error (${response.status}): ${errorMessage}`);
       }
 
-      const data = await response.json();
-      return data.response;
+      try {
+        const data = JSON.parse(responseText);
+        return data.response;
+      } catch (parseError) {
+        console.error('Failed to parse OpenAI response:', parseError);
+        throw new Error('Invalid response format from OpenAI API');
+      }
     } catch (error) {
       console.error('OpenAI adapter error:', error);
       throw error;
