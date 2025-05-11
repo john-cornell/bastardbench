@@ -23,7 +23,8 @@ import {
   Pie,
   Cell
 } from 'recharts';
-import { ProviderType, ProviderModels, ModelInfo } from '../utils/modelDiscovery';
+import { ProviderModels, ModelInfo } from '../utils/modelDiscovery';
+import { ConnectionFailureChart, FailureChartDatum } from './ConnectionFailureChart';
 
 const stripMarkdown = (text: string) => {
   return text.replace(/```[a-z]*\n/g, '').replace(/```/g, '');
@@ -234,17 +235,40 @@ const ResultCharts = ({ testResults }: { testResults: Record<string, any> }) => 
   // Prepare data for charts
   const adapters = Object.values(testResults);
   
-  // Prepare data for category comparison chart
-  const categoryData = adapters.map((adapter: any) => {
-    const data: any = { name: adapter.name };
+  // Prepare data for individual model answer success/failure charts
+  const modelAnswerData = adapters.map((adapter: any) => {
+    let answerSuccesses = 0;
+    let answerFailures = 0;
+    let total = 0;
+
     (adapter.results || []).forEach((result: any) => {
-      data[result.category] = result.overallScore || 0;
+      (result.tests || []).forEach((t: any) => {
+        total++;
+        if (t.passed === true) {
+          answerSuccesses++;
+        } else if (
+          t.passed === false &&
+          !t.failureType &&
+          t.response &&
+          ((typeof t.response === 'object' && t.response.answer) ||
+           (typeof t.response === 'string' && (() => { try { const parsed = JSON.parse(t.response); return parsed && parsed.answer; } catch { return false; } })()))
+        ) {
+          answerFailures++;
+        }
+      });
     });
-    return data;
+
+    return {
+      model: adapter.name,
+      data: [
+        { type: 'Answer Success', value: answerSuccesses },
+        { type: 'Answer Failure', value: answerFailures }
+      ]
+    };
   });
 
-  // Prepare data for success rate pie chart
-  const successRateData = adapters.map((adapter: any) => {
+  // Prepare data for overall success rate pie chart
+  const overallSuccessData = adapters.map((adapter: any) => {
     let passedTests = 0;
     let totalTests = 0;
     
@@ -261,94 +285,131 @@ const ResultCharts = ({ testResults }: { testResults: Record<string, any> }) => 
     };
   });
 
-  // Prepare data for response time chart
-  const responseTimeData = adapters.map((adapter: any) => {
-    const avgTime = (adapter.results || []).reduce((acc: number, result: any) => {
-      const categoryAvg = (result.tests || []).reduce((sum: number, t: any) => sum + (t.duration || 0), 0) / (result.tests || []).length;
-      return acc + (isNaN(categoryAvg) ? 0 : categoryAvg);
-    }, 0) / (adapter.results || []).length;
+  // Prepare data for connection/API failure charts
+  const failureData = adapters.map((adapter: any) => {
+    let connectionFailures = 0;
+    let apiFailures = 0;
+    let total = 0;
+
+    (adapter.results || []).forEach((result: any) => {
+      (result.tests || []).forEach((t: any) => {
+        total++;
+        if (t.failureType === 'connection') {
+          connectionFailures++;
+        } else if (t.failureType === 'api') {
+          apiFailures++;
+        }
+      });
+    });
 
     return {
-      name: adapter.name,
-      avgResponseTime: isNaN(avgTime) ? 0 : avgTime
+      model: adapter.name,
+      data: [
+        { type: 'Connection Failures', value: connectionFailures },
+        { type: 'API Failures', value: apiFailures }
+      ]
     };
   });
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       <h4 className="font-medium text-gray-900">Performance Analytics</h4>
       
-      {/* Category Comparison Chart */}
-      <div className="bg-white p-3 rounded-lg border border-gray-200">
-        <h5 className="text-sm font-medium text-gray-700 mb-2">Category Performance Comparison</h5>
-        <div className="h-60">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={categoryData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis domain={[0, 100]} />
-              <Tooltip />
-              <Legend />
-              {Object.values(TestCategory).map((category, index) => (
-                <Bar 
-                  key={category} 
-                  dataKey={category} 
-                  fill={CHART_COLORS[index % CHART_COLORS.length]}
-                  name={category.charAt(0).toUpperCase() + category.slice(1)}
-                />
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
+      {/* Individual Model Answer Success/Failure Charts */}
+      <div className="space-y-4">
+        <h5 className="text-lg font-medium text-gray-900">Answer Success/Failure by Model</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {modelAnswerData.map(({ model, data }) => (
+            <div key={model} className="bg-white p-4 rounded-lg border border-gray-200">
+              <h6 className="text-sm font-medium text-gray-700 mb-2">{model}</h6>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={data}
+                      dataKey="value"
+                      nameKey="type"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={60}
+                      label={({ name, value }) => `${name}: ${value}`}
+                    >
+                      {data.map((entry, index) => (
+                        <Cell 
+                          key={entry.type} 
+                          fill={entry.type === 'Answer Success' ? '#16a34a' : '#dc2626'} 
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Success Rate Pie Chart */}
-      <div className="bg-white p-3 rounded-lg border border-gray-200">
-        <h5 className="text-sm font-medium text-gray-700 mb-2">Test Success Rate</h5>
-        <div className="h-48">
+      {/* Overall Success Rate Pie Chart */}
+      <div className="bg-white p-4 rounded-lg border border-gray-200">
+        <h5 className="text-lg font-medium text-gray-900 mb-4">Overall Success Rate Across All Models</h5>
+        <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
-                data={successRateData}
+                data={overallSuccessData}
                 dataKey="value"
                 nameKey="name"
                 cx="50%"
                 cy="50%"
-                outerRadius={60}
+                outerRadius={80}
                 label={({ name, value }) => `${name}: ${value.toFixed(1)}%`}
               >
-                {successRateData.map((entry, index) => (
+                {overallSuccessData.map((entry, index) => (
                   <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />
                 ))}
               </Pie>
               <Tooltip formatter={(value: any) => `${Number(value).toFixed(1)}%`} />
+              <Legend />
             </PieChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* Average Response Time Chart */}
-      <div className="bg-white p-3 rounded-lg border border-gray-200">
-        <h5 className="text-sm font-medium text-gray-700 mb-2">Average Response Time</h5>
-        <div className="h-48">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={responseTimeData}
-                dataKey="avgResponseTime"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                outerRadius={60}
-                label={({ name, value }) => `${name}: ${value.toFixed(0)}ms`}
-              >
-                {responseTimeData.map((entry, index) => (
-                  <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value: any) => `${Number(value).toFixed(0)}ms`} />
-            </PieChart>
-          </ResponsiveContainer>
+      {/* Connection/API Failure Charts */}
+      <div className="space-y-4">
+        <h5 className="text-lg font-medium text-gray-900">Connection & API Failures by Model</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {failureData.map(({ model, data }) => (
+            <div key={model} className="bg-white p-4 rounded-lg border border-gray-200">
+              <h6 className="text-sm font-medium text-gray-700 mb-2">{model}</h6>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={data}
+                      dataKey="value"
+                      nameKey="type"
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={60}
+                      label={({ name, value }) => `${name}: ${value}`}
+                    >
+                      {data.map((entry, index) => (
+                        <Cell 
+                          key={entry.type} 
+                          fill={entry.type === 'Connection Failures' ? '#ef4444' : '#f59e42'} 
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -1201,7 +1262,7 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
               if (retryCount < maxRetries) {
                 retryCount++;
                 const backoffTime = Math.min(1000 * Math.pow(2, retryCount), 30000); // Exponential backoff, max 30 seconds
-                console.log(`Error detected (${llmError.message}), retrying ${retryCount}/${maxRetries} after ${backoffTime}ms`);
+                console.log(`Error detected (${llmError instanceof Error ? llmError.message : 'Unknown error'}), retrying ${retryCount}/${maxRetries} after ${backoffTime}ms`);
                 await new Promise(resolve => setTimeout(resolve, backoffTime));
                 return executeTest(); // Retry the test
               }
@@ -1282,12 +1343,36 @@ export function TestSuiteManager({ isOpen, onClose }: TestSuiteManagerProps) {
           } catch (error) {
             console.error(`Error running test ${test.name} for adapter ${adapter.name}:`, error);
             setIsTestRunning(false);
+            
+            // Determine if this is a connection error or API error
+            let failureType = 'api';
+            
+            // Check common connection error patterns
+            if (error instanceof Error) {
+              const errorMessage = error.message.toLowerCase();
+              if (
+                errorMessage.includes('network') ||
+                errorMessage.includes('socket') || 
+                errorMessage.includes('timeout') ||
+                errorMessage.includes('aborted') ||
+                errorMessage.includes('connection') ||
+                errorMessage.includes('cors') ||
+                errorMessage.includes('offline') ||
+                errorMessage.includes('failed to fetch') ||
+                errorMessage.includes('cannot reach')
+              ) {
+                failureType = 'connection';
+                console.log(`Classified error as connection failure: ${error.message}`);
+              }
+            }
+            
             return {
               testName: test.name,
               prompt: test.prompt,
               error: error instanceof Error ? error.message : 'Unknown error',
               duration: 0,
               passed: false,
+              failureType, // Add the failure type classification
               retryCount: retryCount // Include retry information in result
             };
           }

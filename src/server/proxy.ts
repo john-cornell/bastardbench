@@ -1,10 +1,63 @@
 import express, { Request, Response, RequestHandler } from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
+import http from 'http';
+import https from 'https';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Circuit breaker configuration
+interface CircuitBreakerState {
+  failures: number;
+  connectionFailures: number;  // Track connection failures separately
+  lastFailureTime: number;
+  isOpen: boolean;
+  lastSuccessTime: number;
+}
+
+const CIRCUIT_BREAKER = {
+  failureThreshold: 5,
+  connectionFailureThreshold: 3,  // Separate threshold for connection failures
+  resetTimeout: 30000, // 30 seconds
+  halfOpenTimeout: 10000, // 10 seconds
+  states: new Map<string, CircuitBreakerState>()
+};
+
+// Request queue configuration
+interface QueuedRequest {
+  resolve: (value: any) => void;
+  reject: (reason: any) => void;
+  timestamp: number;
+}
+
+const REQUEST_QUEUE = {
+  maxConcurrent: 1, // Changed to 1 for strict sequential processing
+  maxQueueSize: 50, // Reduced queue size
+  queue: new Map<string, QueuedRequest[]>(),
+  activeRequests: new Map<string, number>(),
+  processingQueue: new Map<string, boolean>(), // Track if queue is being processed
+  rateLimit: {
+    requestsPerMinute: 30,
+    lastRequestTime: new Map<string, number>()
+  }
+};
+
+// Configure connection pools
+const httpAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 30000
+});
+
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 30000
+});
 
 // Type definitions for API responses
 interface OpenAIResponse {
@@ -29,6 +82,132 @@ interface OllamaResponse {
 
 interface GoogleResponse {
   candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+}
+
+// Add timeout configuration
+const TIMEOUT_CONFIG = {
+  default: 120000, // 2 minutes for normal requests
+  cryptic: 120000, // 2 minutes for cryptic tests
+  maxRetries: 3,
+  retryDelay: 1000 // 1 second base delay
+};
+
+// Helper to determine if a request is a cryptic test
+function isCrypticTest(prompt: string): boolean {
+  return prompt.includes('cryptic crossword') || 
+         prompt.includes('IMPORTANT: ANSWER ONLY in the valid JSON format');
+}
+
+// Circuit breaker functions
+function getCircuitBreakerState(model: string): CircuitBreakerState {
+  if (!CIRCUIT_BREAKER.states.has(model)) {
+    CIRCUIT_BREAKER.states.set(model, {
+      failures: 0,
+      connectionFailures: 0,
+      lastFailureTime: 0,
+      isOpen: false,
+      lastSuccessTime: Date.now()
+    });
+  }
+  return CIRCUIT_BREAKER.states.get(model)!;
+}
+
+function canMakeRequest(model: string): boolean {
+  const state = getCircuitBreakerState(model);
+  const now = Date.now();
+
+  if (state.isOpen) {
+    // Check if we should try a half-open state
+    if (now - state.lastFailureTime > CIRCUIT_BREAKER.halfOpenTimeout) {
+      console.log(`[${new Date().toISOString()}] Circuit breaker for ${model} entering half-open state`);
+      state.isOpen = false;
+      return true;
+    }
+    return false;
+  }
+
+  return true;
+}
+
+function recordSuccess(model: string) {
+  const state = getCircuitBreakerState(model);
+  state.failures = 0;
+  state.lastSuccessTime = Date.now();
+  state.isOpen = false;
+}
+
+function recordFailure(model: string, isConnectionError: boolean) {
+  const state = getCircuitBreakerState(model);
+  state.failures++;
+  state.lastFailureTime = Date.now();
+
+  if (state.failures >= CIRCUIT_BREAKER.failureThreshold) {
+    console.log(`[${new Date().toISOString()}] Circuit breaker for ${model} opened after ${state.failures} failures`);
+    state.isOpen = true;
+  }
+}
+
+// Request queue functions
+async function enqueueRequest(model: string, requestFn: () => Promise<any>): Promise<any> {
+  if (!REQUEST_QUEUE.queue.has(model)) {
+    REQUEST_QUEUE.queue.set(model, []);
+  }
+
+  const queue = REQUEST_QUEUE.queue.get(model)!;
+  const activeCount = REQUEST_QUEUE.activeRequests.get(model) || 0;
+
+  // Check rate limit
+  const lastRequestTime = REQUEST_QUEUE.rateLimit.lastRequestTime.get(model) || 0;
+  const timeSinceLastRequest = Date.now() - lastRequestTime;
+  const minTimeBetweenRequests = (60 * 1000) / REQUEST_QUEUE.rateLimit.requestsPerMinute;
+
+  if (timeSinceLastRequest < minTimeBetweenRequests) {
+    const waitTime = minTimeBetweenRequests - timeSinceLastRequest;
+    console.log(`[${new Date().toISOString()}] Rate limiting request for ${model}, waiting ${waitTime}ms`);
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+
+  if (activeCount >= REQUEST_QUEUE.maxConcurrent) {
+    if (queue.length >= REQUEST_QUEUE.maxQueueSize) {
+      throw new Error(`Request queue for ${model} is full`);
+    }
+
+    return new Promise((resolve, reject) => {
+      queue.push({
+        resolve,
+        reject,
+        timestamp: Date.now()
+      });
+    });
+  }
+
+  REQUEST_QUEUE.activeRequests.set(model, activeCount + 1);
+  REQUEST_QUEUE.rateLimit.lastRequestTime.set(model, Date.now());
+
+  try {
+    const result = await requestFn();
+    return result;
+  } finally {
+    const newActiveCount = (REQUEST_QUEUE.activeRequests.get(model) || 1) - 1;
+    REQUEST_QUEUE.activeRequests.set(model, newActiveCount);
+
+    // Process next request in queue if any
+    if (queue.length > 0 && !REQUEST_QUEUE.processingQueue.get(model)) {
+      REQUEST_QUEUE.processingQueue.set(model, true);
+      try {
+        const nextRequest = queue.shift()!;
+        if (Date.now() - nextRequest.timestamp > 30000) {
+          nextRequest.reject(new Error('Request timed out in queue'));
+        } else {
+          // Add delay between requests
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          enqueueRequest(model, requestFn).then(nextRequest.resolve).catch(nextRequest.reject);
+        }
+      } finally {
+        REQUEST_QUEUE.processingQueue.set(model, false);
+      }
+    }
+  }
 }
 
 // OpenAI proxy
@@ -228,149 +407,180 @@ app.post('/api/ollama', (async (req: Request, res: Response) => {
 
 // Google proxy endpoint
 app.post('/api/google', (async (req: Request, res: Response) => {
-  try {
-    const { apiKey, prompt, model, apiPath } = req.body;
-    console.log('Google Proxy Request:', {
-      model,
-      apiPath,
-      promptLength: prompt.length,
-      apiKeyLength: apiKey ? apiKey.length : 0
-    });
+  const MAX_RETRIES = TIMEOUT_CONFIG.maxRetries;
+  let retryCount = 0;
+  const { model } = req.body;
+  let hasResponded = false;
 
-    if (!apiPath) {
-      console.log('No API path provided for model:', model);
-      // We should not auto-generate an API path - log an error
-      return res.status(400).json({ 
-        error: `No API path provided for model ${model}. Discovery process should provide this.` 
-      });
+  const sendResponse = (status: number, data: any) => {
+    if (!hasResponded) {
+      hasResponded = true;
+      res.status(status).json(data);
     }
-    
-    const effectiveApiPath = apiPath;
-    console.log(`Using API path from model discovery: ${effectiveApiPath}`);
-    
-    const googleApiUrl = `https://generativelanguage.googleapis.com/${effectiveApiPath}`;
-    console.log('Google API URL:', googleApiUrl);
+  };
 
-    // Construct request body
-    const requestBody = {
-      contents: [{
-        parts: [{
-          text: prompt
-        }]
-      }]
-    };
-    
-    console.log('Google API Request Body:', JSON.stringify(requestBody));
-
-    // Make the request with additional error handling
-    let response;
+  while (retryCount < MAX_RETRIES) {
     try {
-      response = await fetch(googleApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey
-        },
-        body: JSON.stringify(requestBody)
-      });
-    } catch (fetchError) {
-      console.error('Google API Fetch Error:', fetchError);
-      throw new Error(`Error connecting to Google API: ${fetchError instanceof Error ? fetchError.message : 'Unknown error'}`);
-    }
-
-    console.log('Google API Response Status:', response.status, response.statusText);
-    console.log('Google API Response Headers:', Object.fromEntries([...response.headers.entries()]));
-    
-    const rawResponseText = await response.text();
-    console.log('Google API Raw Response:', rawResponseText);
-
-    if (!response.ok) {
-      console.error('Google API Error Response:', {
-        status: response.status,
-        statusText: response.statusText,
-        url: googleApiUrl,
-        model: model || 'not specified',
-        apiPath: effectiveApiPath,
-        body: rawResponseText || '(empty response body)',
-        headers: Object.fromEntries([...response.headers.entries()])
-      });
+      const { apiKey, prompt, apiPath } = req.body;
       
-      // Attempt to parse error message from response
-      try {
-        if (rawResponseText && rawResponseText.trim()) {
-          const errorJson = JSON.parse(rawResponseText);
-          console.error('Parsed Google API Error JSON:', JSON.stringify(errorJson, null, 2));
-          
-          if (errorJson.error) {
-            console.error('Google API Detailed Error:', errorJson.error);
-            const errorMessage = errorJson.error.message || JSON.stringify(errorJson.error);
-            console.error(`Google API Error Message: ${errorMessage}`);
-            
-            // Provide guidance about API versions
-            if (response.status === 404 && errorMessage.includes('not found')) {
-              console.error(`MODEL NOT FOUND: The model ${model} was not found on ${effectiveApiPath}`);
-              if (effectiveApiPath.includes('v1/')) {
-                console.error('RECOMMENDATION: Try with the v1beta endpoint instead of v1');
-              } else if (effectiveApiPath.includes('v1beta/')) {
-                console.error('RECOMMENDATION: Try with the v1 endpoint instead of v1beta');
-              }
-            }
-            
-            return res.status(response.status).json({ 
-              error: `Google API error: ${response.status} ${response.statusText} - ${errorMessage}`
-            });
-          }
-        } else {
-          console.error('Google API returned empty error response body');
-        }
-      } catch (parseError) {
-        console.error('Failed to parse error JSON:', parseError, 'Raw response:', rawResponseText);
+      // Check circuit breaker
+      if (!canMakeRequest(model)) {
+        console.log(`[${new Date().toISOString()}] Circuit breaker is open for ${model}, rejecting request`);
+        return sendResponse(503, { 
+          error: 'Service temporarily unavailable due to high error rate',
+          retryAfter: Math.ceil((CIRCUIT_BREAKER.resetTimeout - (Date.now() - getCircuitBreakerState(model).lastFailureTime)) / 1000)
+        });
       }
-      
-      return res.status(response.status).json({ 
-        error: `Google API error: ${response.status} ${response.statusText} - Check server logs for details`
-      });
-    }
 
-    let parsedResponse;
-    try {
-      parsedResponse = JSON.parse(rawResponseText);
-    } catch (e) {
-      console.error('Error parsing Google API response:', e);
-      console.error('Raw response that failed to parse:', rawResponseText);
-      throw new Error('Invalid JSON response from Google API');
-    }
+      // Enqueue the request
+      const result = await enqueueRequest(model, async () => {
+        console.log('Google Proxy Request:', {
+          model,
+          apiPath,
+          promptLength: prompt.length,
+          apiKeyLength: apiKey ? apiKey.length : 0,
+          attempt: retryCount + 1,
+          queueLength: REQUEST_QUEUE.queue.get(model)?.length || 0,
+          activeRequests: REQUEST_QUEUE.activeRequests.get(model) || 0,
+          isCrypticTest: isCrypticTest(prompt)
+        });
 
-    // Extract the response text from the Google API response
-    const modelResponseText = parsedResponse.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!modelResponseText) {
-      console.error('Invalid Google API response structure:', parsedResponse);
-      throw new Error('Invalid response format from Google API');
-    }
+        if (!apiPath) {
+          console.log('No API path provided for model:', model);
+          throw new Error(`No API path provided for model ${model}. Discovery process should provide this.`);
+        }
+        
+        const effectiveApiPath = apiPath;
+        console.log(`Using API path from model discovery: ${effectiveApiPath}`);
+        
+        const googleApiUrl = `https://generativelanguage.googleapis.com/${effectiveApiPath}`;
+        console.log('Google API URL:', googleApiUrl);
 
-    // Try to parse the response as JSON first
-    try {
-      const jsonResponse = JSON.parse(modelResponseText);
-      return res.json({ response: jsonResponse });
-    } catch (e) {
-      // If not JSON, try to extract JSON from markdown code blocks
-      const jsonMatch = modelResponseText.match(/```(?:json)?\n([\s\S]*?)\n```/);
-      if (jsonMatch) {
+        const requestBody = {
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }]
+        };
+        
+        console.log('Google API Request Body:', JSON.stringify(requestBody));
+
+        const startTime = Date.now();
+        console.log(`[${new Date().toISOString()}] Starting Google API request for model ${model}`);
+        
+        // Determine timeout based on request type
+        const timeout = isCrypticTest(prompt) ? TIMEOUT_CONFIG.cryptic : TIMEOUT_CONFIG.default;
+        console.log(`Using timeout of ${timeout}ms for request`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          console.log(`[${new Date().toISOString()}] Request timeout after ${timeout}ms for model ${model}`);
+          controller.abort();
+        }, timeout);
+
         try {
-          const jsonFromMarkdown = JSON.parse(jsonMatch[1].trim());
-          return res.json({ response: jsonFromMarkdown });
-        } catch (e) {
-          console.error('Error parsing JSON from markdown:', e);
-          console.error('Markdown content:', jsonMatch[1]);
+          const response = await fetch(googleApiUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+              'Connection': 'close',
+              'Keep-Alive': 'timeout=30, max=1'
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+            agent: googleApiUrl.startsWith('https') ? httpsAgent : httpAgent
+          });
+
+          const endTime = Date.now();
+          console.log(`[${new Date().toISOString()}] Request completed in ${endTime - startTime}ms for model ${model}`);
+          clearTimeout(timeoutId);
+
+          // Update circuit breaker based on response
+          if (response.ok) {
+            recordSuccess(model);
+          } else {
+            recordFailure(model, response.status === 0 ? true : false);
+          }
+
+          return response;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          throw error;
+        }
+      });
+
+      // Process the result
+      if (!result.ok) {
+        const errorText = await result.text();
+        console.error('Google API Error Response:', {
+          status: result.status,
+          statusText: result.statusText,
+          error: errorText
+        });
+
+        if (result.status === 0 && retryCount < MAX_RETRIES - 1) {
+          const delay = TIMEOUT_CONFIG.retryDelay * Math.pow(2, retryCount);
+          console.log(`Socket hang up error, retrying (${retryCount + 1}/${MAX_RETRIES}) after ${delay}ms...`);
+          retryCount++;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
+        // Set proper failureType for different error types
+        const failureType = result.status === 0 ? 'connection' : 'api';
+        return sendResponse(result.status, { 
+          error: `Google API error: ${result.status} ${result.statusText} - ${errorText}`,
+          failureType
+        });
+      }
+
+      const data = await result.json() as GoogleResponse;
+      return sendResponse(200, { response: data.candidates[0].content.parts[0].text });
+
+    } catch (error) {
+      console.error('Google Proxy Error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      
+      // Record failure in circuit breaker
+      recordFailure(model, error instanceof Error && 
+        (errorMessage.includes('network') || 
+         errorMessage.includes('socket') || 
+         errorMessage.includes('timeout') ||
+         errorMessage.includes('aborted') ||
+         errorMessage.includes('connection')) ? true : false);
+      
+      // Only send response if we haven't already
+      if (!hasResponded) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        const isConnectionError = error instanceof Error && 
+          (errorMessage.toLowerCase().includes('network') || 
+           errorMessage.toLowerCase().includes('socket') || 
+           errorMessage.toLowerCase().includes('timeout') ||
+           errorMessage.toLowerCase().includes('aborted') ||
+           errorMessage.toLowerCase().includes('connection') ||
+           errorMessage.toLowerCase().includes('failed to fetch'));
+
+        if (error instanceof Error && error.message === 'Request timed out in queue') {
+          return sendResponse(504, { 
+            error: 'Request timed out while waiting in queue',
+            failureType: 'connection'
+          });
+        } else if (error instanceof Error && error.name === 'AbortError') {
+          return sendResponse(504, { 
+            error: 'Request timed out while processing',
+            failureType: 'connection'
+          });
+        } else {
+          return sendResponse(500, { 
+            error: errorMessage,
+            failureType: isConnectionError ? 'connection' : 'api'
+          });
         }
       }
-      // If all else fails, return the raw text
-      return res.json({ response: modelResponseText });
+      break;
     }
-  } catch (error) {
-    console.error('Google Proxy Error:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    res.status(500).json({ error: errorMessage });
   }
 }) as RequestHandler);
 
